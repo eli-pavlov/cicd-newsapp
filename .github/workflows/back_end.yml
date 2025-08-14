@@ -112,7 +112,23 @@ jobs:
         run: |
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kubeconfig
           echo "KUBECONFIG=$HOME/.kubeconfig" >> $GITHUB_ENV
+          # Prefer ExternalIP; fall back to InternalIP
+          get_node_ip () {
+            local selector="$1"
+            local ext=$(kubectl get node -l "$selector" -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+            if [ -n "$ext" ]; then
+              echo "$ext"
+            else
+              kubectl get node -l "$selector" -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
+            fi
+          }
 
+          NODE1_IP=$(get_node_ip 'kubernetes.io/hostname=node-1')
+          NODE2_IP=$(get_node_ip 'kubernetes.io/hostname=node-2')
+
+          echo "Node1 IP: $NODE1_IP"
+          echo "Node2 IP: $NODE2_IP"
+          
       - name: Create/Update DB & backend secrets (dev namespace)
         env:
           KUBECONFIG: ${{ env.KUBECONFIG }}
