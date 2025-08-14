@@ -108,8 +108,8 @@ jobs:
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
         with:
-          context: ./src/backend
-          file: ./src/backend/Dockerfile
+          context: ./src  # <-- Change this to the root of the source repo
+          file: ./src/frontend/Dockerfile  # <-- Specify the full path to the Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
