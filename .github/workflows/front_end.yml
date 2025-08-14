@@ -1,19 +1,19 @@
-name: Frontend CI/CD (via repo_dispatch)
+name: Backend CI/CD (via repo_dispatch)
 
 on:
   repository_dispatch:
-    types: [frontend]
+    types: [backend]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  APP_NAME: newsapp-frontend   # image name (not secret)
+  APP_NAME: newsapp-backend    # image name (not secret)
 
 jobs:
-  build-deploy-frontend:
-    if: github.event.action == 'frontend'
+  build-deploy-backend:
+    if: github.event.action == 'backend'
     runs-on: ubuntu-latest
     env:
       BRANCH_NAME: ${{ github.event.client_payload.branch }}
@@ -24,10 +24,10 @@ jobs:
         run: |
           test -n "${BRANCH_NAME}" && test -n "${COMMIT_SHA}" && test -n "${SHORT_SHA}"
 
-      - name: Checkout frontend source at sent commit
+      - name: Checkout backend source at sent commit
         run: |
           git config --global advice.detachedHead false
-          git clone https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/ghGill/newsAppFront.git app
+          git clone https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/ghGill/newsAppBackend.git app
           cd app
           git fetch --all --tags
           git checkout "${COMMIT_SHA}"
@@ -81,5 +81,5 @@ jobs:
           kustomize edit set image ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.TAG }}
 
           git add kustomization.yaml
-          git commit -m "FE CI: ${APP_NAME} -> ${TAG} (${SHORT_SHA}) for ${ENVIRONMENT}" || echo "Nothing to commit"
+          git commit -m "BE CI: ${APP_NAME} -> ${TAG} (${SHORT_SHA}) for ${ENVIRONMENT}" || echo "Nothing to commit"
           git push
