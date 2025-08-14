@@ -12,15 +12,14 @@ ARG VITE_NEWS_INTERVAL_IN_MIN
 ENV VITE_SERVER_URL=$VITE_SERVER_URL
 ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
 
-# Bring in the source repo content
+# Bring in the source repo content (the workflow sets context: ./src)
 COPY . .
 
 # Build the app
 RUN npm run build
 
 # --- Normalize build output to /app/dist ---
-# Your app currently outputs to backend/public/app (per logs).
-# This normalization keeps the COPY line stable regardless of app layout.
+# Your app emits to backend/public/app (per Vite logs); normalize so the next stage is stable.
 RUN set -eux; \
   if [ -d backend/public/app ]; then \
     mkdir -p dist && cp -a backend/public/app/. dist/; \
@@ -40,10 +39,10 @@ RUN set -eux; \
 FROM nginx:1.27-alpine
 WORKDIR /app
 
-# Remove default html
+# Clear default HTML
 RUN rm -rf /usr/share/nginx/html/*
 
-# Always copy from normalized path
+# Copy the normalized Vite output
 COPY --from=build /app/dist /usr/share/nginx/html
 
 # Nginx reverse proxy config (workflow copies frontend/nginx/* into src/nginx/)

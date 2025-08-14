@@ -164,12 +164,12 @@ jobs:
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
 
-          # Read backend settings from nested structure (backend alias)
+          # Read backend settings from nested structure
           BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Write frontend settings under frontend alias
+          # Write frontend settings under nested structure
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -184,3 +184,4 @@ jobs:
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
           git push origin main
+
