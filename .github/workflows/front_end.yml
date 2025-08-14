@@ -101,3 +101,37 @@ jobs:
             org.opencontainers.image.revision=${{ steps.ctx.outputs.commit }}
 
       # -- Helm deploy will be added in the next step --
+      - name: Checkout manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.MANIFESTS_REPO }}
+          token: ${{ secrets.GH_TOKEN }}
+          path: manifests
+
+      - name: Install yq
+        run: |
+          YQ_VERSION=v4.44.1
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Update frontend dev values (image + VITE_* envs)
+        working-directory: manifests
+        env:
+          IMAGE_REPO: ghcr.io/eli-pavlov/newsapp/frontend
+          IMAGE_TAG:  ${{ github.sha }}
+          NODE2_IP:   ${{ vars.NODE2_IP }}
+        run: |
+          SERVER_URL="http://${NODE2_IP}:30001"
+
+          yq -i '
+            .image.repository = strenv(IMAGE_REPO) |
+            .image.tag        = strenv(IMAGE_TAG)   |
+            .env.plain.VITE_SERVER_URL = strenv(SERVER_URL) |
+            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5"
+          ' values/frontend/dev.yaml
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add values/frontend/dev.yaml
+          git commit -m "ci: frontend dev -> ${IMAGE_REPO}:${IMAGE_TAG}, VITE_SERVER_URL=${SERVER_URL}" || echo "No changes"
+          git push origin main

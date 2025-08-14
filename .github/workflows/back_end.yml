@@ -92,3 +92,64 @@ jobs:
             org.opencontainers.image.revision=${{ steps.ctx.outputs.commit }}
 
       # -- Helm deploy will be added in the next step --
+      - name: Checkout manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.MANIFESTS_REPO }}
+          token: ${{ secrets.GH_TOKEN }}
+          path: manifests
+
+      - name: Install kubectl & yq
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y jq
+          curl -L -o kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -L -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          YQ_VERSION=v4.44.1
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Kube config
+        run: |
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kubeconfig
+          echo "KUBECONFIG=$HOME/.kubeconfig" >> $GITHUB_ENV
+
+      - name: Create/Update DB & backend secrets (dev namespace)
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          # MySQL credentials for DB pod
+          kubectl -n backend create secret generic mysql-credentials \
+            --from-literal=MYSQL_ROOT_PASSWORD="${DB_ROOT_PASSWORD}" \
+            --from-literal=MYSQL_DATABASE="${DB_NAME}" \
+            --from-literal=MYSQL_USER="${DB_USER}" \
+            --from-literal=MYSQL_PASSWORD="${DB_PASSWORD}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Backend consumes DB_URI
+          DB_HOST="mysql.backend.svc.cluster.local"
+          DB_PORT="3306"
+          DB_URI="mysql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+          kubectl -n backend create secret generic backend-secrets \
+            --from-literal=DB_URI="${DB_URI}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update backend image tag in manifests (dev)
+        working-directory: manifests
+        env:
+          IMAGE_REPO: ghcr.io/eli-pavlov/newsapp/backend
+          IMAGE_TAG:  ${{ github.sha }}
+        run: |
+          yq -i '
+            .image.repository = strenv(IMAGE_REPO) |
+            .image.tag        = strenv(IMAGE_TAG)
+          ' values/backend/dev.yaml
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add values/backend/dev.yaml
+          git commit -m "ci: backend dev -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
+          git push origin main
