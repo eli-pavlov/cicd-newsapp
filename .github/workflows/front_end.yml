@@ -20,7 +20,7 @@ on:
       app_name:
         description: "App name used in image name"
         required: true
-        default: "newsapp-backend"
+        default: "newsapp-frontend"
         type: string
 
 permissions:
