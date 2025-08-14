@@ -1,12 +1,6 @@
 name: CI/CD Pipeline
 
 on:
-  push:
-    branches: [development, main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
 permissions:
   pull-requests: read
 
