@@ -21,8 +21,8 @@ WORKDIR /app
 # Remove default html
 RUN rm -rf /usr/share/nginx/html/*
 
-# ✅ Copy the actual build output
-COPY --from=build /app/backend/public/app /usr/share/nginx/html
+# ✅ Copy the actual Vite build output (dist)
+COPY --from=build /app/dist /usr/share/nginx/html
 
 # Nginx reverse proxy config
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
