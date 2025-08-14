@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-# Pass Vite args from build args
+# Vite build-time args
 ARG VITE_SERVER_URL
 ARG VITE_NEWS_INTERVAL_IN_MIN
 ENV VITE_SERVER_URL=$VITE_SERVER_URL
@@ -21,7 +21,7 @@ WORKDIR /app
 # Remove default html
 RUN rm -rf /usr/share/nginx/html/*
 
-# ✅ Copy the actual Vite build output (dist)
+# Copy Vite build output
 COPY --from=build /app/dist /usr/share/nginx/html
 
 # Nginx reverse proxy config

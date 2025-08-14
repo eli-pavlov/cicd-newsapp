@@ -120,7 +120,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          # Use CI-owned Dockerfile with the app context
           file: ./backend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
@@ -159,7 +158,6 @@ jobs:
         id: mksecrets
         working-directory: manifests
         env:
-          DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
@@ -169,39 +167,37 @@ jobs:
 
           # Optionally read DB service config; fall back to sensible defaults
           DB_VALUES=""
-          for p in values/database/${{ steps.deploy.outputs.values_suffix }}.yaml values/mysql/${{ steps.deploy.outputs.values_suffix }}.yaml values/db/${{ steps.deploy.outputs.values_suffix }}.yaml; do
+          for p in values/postgresql/${{ steps.deploy.outputs.values_suffix }}.yaml values/db/${{ steps.deploy.outputs.values_suffix }}.yaml; do
             if [ -f "$p" ]; then DB_VALUES="$p"; break; fi
           done
 
           if [ -n "$DB_VALUES" ]; then
-            DB_SVC_NAME=$(yq -r '.service.name // .app.name // "mysql"' "$DB_VALUES")
-            DB_PORT=$(yq -r '.service.port // 3306' "$DB_VALUES")
+            DB_SVC_NAME=$(yq -r '.service.name // .app.name // "postgresql"' "$DB_VALUES")
+            DB_PORT=$(yq -r '.service.port // 5432' "$DB_VALUES")
           else
-            DB_SVC_NAME="mysql"
-            DB_PORT="3306"
+            DB_SVC_NAME="postgresql"
+            DB_PORT="5432"
           fi
 
           DB_HOST="${DB_SVC_NAME}.${K8S_NS}.svc.cluster.local"
-          DB_URI="mysql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+          DB_URI="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
-          cat > /tmp/mysql-secret.yaml <<'YAML'
+          cat > /tmp/postgres-secret.yaml <<'YAML'
           apiVersion: v1
           kind: Secret
           metadata:
-            name: mysql-credentials
+            name: postgres-credentials
             namespace: __NS__
           type: Opaque
           stringData:
-            MYSQL_ROOT_PASSWORD: __ROOT__
-            MYSQL_DATABASE: __DB__
-            MYSQL_USER: __USER__
-            MYSQL_PASSWORD: __PASS__
+            POSTGRES_DB: __DB__
+            POSTGRES_USER: __USER__
+            POSTGRES_PASSWORD: __PASS__
           YAML
-          sed -i "s|__NS__|${K8S_NS}|" /tmp/mysql-secret.yaml
-          sed -i "s|__ROOT__|${DB_ROOT_PASSWORD//|/\\|}|" /tmp/mysql-secret.yaml
-          sed -i "s|__DB__|${DB_NAME//|/\\|}|" /tmp/mysql-secret.yaml
-          sed -i "s|__USER__|${DB_USER//|/\\|}|" /tmp/mysql-secret.yaml
-          sed -i "s|__PASS__|${DB_PASSWORD//|/\\|}|" /tmp/mysql-secret.yaml
+          sed -i "s|__NS__|${K8S_NS}|" /tmp/postgres-secret.yaml
+          sed -i "s|__DB__|${DB_NAME//|/\\|}|" /tmp/postgres-secret.yaml
+          sed -i "s|__USER__|${DB_USER//|/\\|}|" /tmp/postgres-secret.yaml
+          sed -i "s|__PASS__|${DB_PASSWORD//|/\\|}|" /tmp/postgres-secret.yaml
 
           cat > /tmp/backend-secret.yaml <<'YAML'
           apiVersion: v1
@@ -218,7 +214,7 @@ jobs:
 
       - name: Seal secrets (offline)
         run: |
-          kubeseal --cert /tmp/cert/sealed-secrets.pem --format yaml < /tmp/mysql-secret.yaml    > /tmp/mysql-credentials.sealed.yaml
+          kubeseal --cert /tmp/cert/sealed-secrets.pem --format yaml < /tmp/postgres-secret.yaml > /tmp/postgres-credentials.sealed.yaml
           kubeseal --cert /tmp/cert/sealed-secrets.pem --format yaml < /tmp/backend-secret.yaml  > /tmp/backend-secrets.sealed.yaml
 
       - name: Write sealed files + bump backend image
@@ -231,16 +227,17 @@ jobs:
         run: |
           set -e
           mkdir -p "sealed/backend/${SUBDIR}"
-          mv /tmp/mysql-credentials.sealed.yaml "sealed/backend/${SUBDIR}/mysql-credentials.sealed.yaml"
+          mv /tmp/postgres-credentials.sealed.yaml "sealed/backend/${SUBDIR}/postgres-credentials.sealed.yaml"
           mv /tmp/backend-secrets.sealed.yaml     "sealed/backend/${SUBDIR}/backend-secrets.sealed.yaml"
 
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)
+            .image.tag        = strenv(IMAGE_TAG)   |
+            .env.plain.DB_ENGINE_TYPE = "POSTGRES"
           ' "values/backend/${SUFFIX}.yaml"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "sealed/backend/${SUBDIR}"/*.yaml "values/backend/${SUFFIX}.yaml"
-          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (refresh sealed secrets)" || echo "No changes"
+          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (Postgres; refresh sealed secrets)" || echo "No changes"
           git push origin main
