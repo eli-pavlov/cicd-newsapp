@@ -164,15 +164,27 @@ jobs:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
         run: |
-          set -e
-          # Only bump image here. Vite envs are baked into the image at build time.
+          set -euo pipefail
+
+          # Read backend service name/port from backend values (dev)
+          BACKEND_NAME=$(yq -r '.app.name' values/backend/dev.yaml)
+          BACKEND_NS=$(yq -r '.namespace // "backend"' values/backend/dev.yaml)
+          BACKEND_PORT=$(yq -r '.service.port' values/backend/dev.yaml)
+
+          BACKEND_HOST="${BACKEND_NAME}.${BACKEND_NS}.svc.cluster.local"
+
+          # Frontend talks to its own Nginx at /api; Nginx proxies to the backend service
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)
+            .image.tag        = strenv(IMAGE_TAG)  |
+            .env.plain.VITE_SERVER_URL = "/api"     |
+            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
+            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' values/frontend/dev.yaml
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add values/frontend/dev.yaml
-          git commit -m "ci: frontend dev -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
+          git commit -m "ci: frontend dev -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy to ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
           git push origin main
+
