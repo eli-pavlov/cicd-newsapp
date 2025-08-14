@@ -5,6 +5,23 @@ on:
     types: [build-frontend]
   push:
     branches: [main, development]  # optional convenience
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "Owner/repo of the source (backend) repository"
+        required: true
+        default: "ghGill/newsAppFront"
+        type: string
+      source_ref:
+        description: "Ref to build (HEAD, branch, tag, or commit SHA)"
+        required: true
+        default: "HEAD"
+        type: string
+      app_name:
+        description: "App name used in image name"
+        required: true
+        default: "newsapp-backend"
+        type: string
 
 permissions:
   contents: read
