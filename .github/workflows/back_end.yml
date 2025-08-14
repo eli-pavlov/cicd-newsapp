@@ -108,8 +108,15 @@ jobs:
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
         with:
-          context: ./src  # <-- Change this to the root of the source repo
-          file: ./src/frontend/Dockerfile  # <-- Specify the full path to the Dockerfile
+          # Set the build context to the directory where the source code is cloned.
+          # This makes all files in the 'src' directory available to the Docker build.
+          context: ./src
+          
+          # Specify the path to the Dockerfile relative to the new context.
+          # The Dockerfile is in your workflow repo, which is at the root of the workspace.
+          # So, the path is relative to the root of the runner's workspace, NOT the 'src' directory.
+          file: ./frontend/Dockerfile
+
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
