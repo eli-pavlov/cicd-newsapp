@@ -116,7 +116,7 @@ jobs:
           # Specify the path to the Dockerfile relative to the new context.
           # The Dockerfile is in your workflow repo, which is at the root of the workspace.
           # So, the path is relative to the root of the runner's workspace, NOT the 'src' directory.
-          file: ./frontend/Dockerfile
+          file: ./backend/Dockerfile
 
           platforms: linux/amd64,linux/arm64
           push: true
