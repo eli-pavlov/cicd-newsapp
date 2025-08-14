@@ -3,8 +3,8 @@ name: Build & Deploy Backend
 on:
   repository_dispatch:
     types: [build-backend]
-  push:
-    branches: [main, development]  # optional convenience
+  #push:
+    #branches: [main, development]  # optional convenience
 
 permissions:
   contents: read

@@ -3,8 +3,8 @@ name: Build & Deploy Frontend
 on:
   repository_dispatch:
     types: [build-frontend]
-  push:
-    branches: [main, development]  # optional convenience
+  #push:
+    #branches: [main, development]  # optional convenience
 
 permissions:
   contents: read
