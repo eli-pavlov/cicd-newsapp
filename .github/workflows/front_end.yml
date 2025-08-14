@@ -92,19 +92,6 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "is_latest=${IS_LATEST}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
-
-      - name: Compute build-time frontend env
-        id: feenv
-        shell: bash
-        env:
-          NODE2_IP: ${{ vars.NODE2_IP }}
-        run: |
-          set -euo pipefail
-          : "${NODE2_IP:?Set Actions Variable NODE2_IP}"
-          SERVER_URL="http://${NODE2_IP}:30001"
-          echo "server_url=${SERVER_URL}" >> $GITHUB_OUTPUT
-          echo "news_interval=5" >> $GITHUB_OUTPUT
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -120,21 +107,20 @@ jobs:
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
         with:
-          # Build the source checked out to ./src; Dockerfile lives in this infra repo
           context: ./src
           file: ./frontend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VITE_SERVER_URL=/api
+            VITE_NEWS_INTERVAL_IN_MIN=5
           tags: |
             ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
             ${{ steps.compute-tags.outputs.is_latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
-          build-args: |
-            VITE_SERVER_URL=${{ steps.feenv.outputs.server_url }}
-            VITE_NEWS_INTERVAL_IN_MIN=${{ steps.feenv.outputs.news_interval }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
-            org.opencontainers.image.description=Newsapp frontend (env-baked)
+
 
       # -----------------------------
       # GitOps: bump manifests only

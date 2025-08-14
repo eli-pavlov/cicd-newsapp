@@ -147,6 +147,7 @@ jobs:
 
       - name: Create input Secret YAMLs (dev, namespace=backend)
         id: mksecrets
+        working-directory: manifests
         env:
           DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -154,10 +155,28 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           set -euo pipefail
-          DB_HOST="mysql.backend.svc.cluster.local"
-          DB_PORT="3306"
+
+          # Try common locations for DB values; fall back if missing
+          DB_VALUES=""
+          for p in values/database/dev.yaml values/mysql/dev.yaml values/db/dev.yaml; do
+            if [ -f "$p" ]; then DB_VALUES="$p"; break; fi
+          done
+
+          if [ -n "$DB_VALUES" ]; then
+            DB_SVC_NAME=$(yq -r '.service.name // .app.name // "mysql"' "$DB_VALUES")
+            DB_NS=$(yq -r '.namespace // "backend"' "$DB_VALUES")
+            DB_PORT=$(yq -r '.service.port // 3306' "$DB_VALUES")
+          else
+            # Safe defaults if you don’t have a DB values file yet
+            DB_SVC_NAME="mysql"
+            DB_NS="backend"
+            DB_PORT="3306"
+          fi
+
+          DB_HOST="${DB_SVC_NAME}.${DB_NS}.svc.cluster.local"
           DB_URI="mysql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
+          # --- mysql credentials secret
           cat > /tmp/mysql-secret.yaml <<'YAML'
           apiVersion: v1
           kind: Secret
@@ -176,6 +195,7 @@ jobs:
           sed -i "s|__USER__|${DB_USER//|/\\|}|" /tmp/mysql-secret.yaml
           sed -i "s|__PASS__|${DB_PASSWORD//|/\\|}|" /tmp/mysql-secret.yaml
 
+          # --- backend runtime secret with DB_URI
           cat > /tmp/backend-secret.yaml <<'YAML'
           apiVersion: v1
           kind: Secret
@@ -187,6 +207,7 @@ jobs:
             DB_URI: __URI__
           YAML
           sed -i "s|__URI__|${DB_URI//|/\\|}|" /tmp/backend-secret.yaml
+
 
       - name: Seal secrets offline (one cert for all)
         run: |
