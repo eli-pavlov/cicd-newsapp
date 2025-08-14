@@ -67,8 +67,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.ctx.outputs.src_repo }}
-          # Temporarily use a hardcoded branch to verify
-          ref: 'main' 
+          # Change 'main' back to the dynamic variable
+          ref: ${{ steps.ctx.outputs.src_ref }}
           path: src
 
       - name: Compute image tags
