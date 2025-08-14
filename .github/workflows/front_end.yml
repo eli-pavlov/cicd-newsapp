@@ -104,6 +104,11 @@ jobs:
             echo "values_suffix=dev" >> $GITHUB_OUTPUT
           fi
 
+      - name: Copy nginx config into frontend build context
+        run: |
+          mkdir -p src/nginx
+          cp -r frontend/nginx/* src/nginx/
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Buildx
@@ -113,11 +118,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Copy nginx config into frontend build context
-        run: |
-          mkdir -p src/nginx
-          cp -r frontend/nginx/* src/nginx/
 
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
@@ -136,7 +136,7 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # ---------- GitOps: bump FE image + FE env (proxy to backend) ----------
+      # ---------- GitOps: bump FE image + FE proxy target ----------
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -150,33 +150,30 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Update frontend image & proxy env in manifests (nested under frontend:)
+      - name: Update frontend image & proxy env in manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
           K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
-        shell: bash
         run: |
           set -euo pipefail
 
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
 
-          # Read backend settings from nested structure
-          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_NAME=$(yq -r '.app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Write frontend settings under nested structure
           yq -i '
-            .frontend.image.repository = strenv(IMAGE_REPO) |
-            .frontend.image.tag        = strenv(IMAGE_TAG)  |
-            .frontend.env.plain.VITE_SERVER_URL = "/api"     |
-            .frontend.env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
-            .frontend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
+            .image.repository = strenv(IMAGE_REPO) |
+            .image.tag        = strenv(IMAGE_TAG)  |
+            .env.plain.VITE_SERVER_URL = "/api"     |
+            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
+            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
+            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
           git config user.name  "github-actions[bot]"
@@ -184,4 +181,3 @@ jobs:
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
           git push origin main
-

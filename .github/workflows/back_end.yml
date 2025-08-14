@@ -154,7 +154,7 @@ jobs:
           mkdir -p /tmp/cert
           echo "${{ secrets.SEALED_SECRETS_CERT }}" | base64 -d > /tmp/cert/sealed-secrets.pem
 
-      - name: Create input Secret YAMLs (env-aware)
+      - name: Create input Secret YAMLs (Postgres, env-aware)
         id: mksecrets
         working-directory: manifests
         env:
@@ -165,23 +165,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Optionally read DB service config; fall back to sensible defaults
-          DB_VALUES=""
-          for p in values/postgresql/${{ steps.deploy.outputs.values_suffix }}.yaml values/db/${{ steps.deploy.outputs.values_suffix }}.yaml; do
-            if [ -f "$p" ]; then DB_VALUES="$p"; break; fi
-          done
-
-          if [ -n "$DB_VALUES" ]; then
-            DB_SVC_NAME=$(yq -r '.service.name // .app.name // "postgresql"' "$DB_VALUES")
-            DB_PORT=$(yq -r '.service.port // 5432' "$DB_VALUES")
-          else
-            DB_SVC_NAME="postgresql"
-            DB_PORT="5432"
-          fi
-
+          # PostgreSQL service details
+          DB_SVC_NAME="postgresql"
+          DB_PORT="5432"
           DB_HOST="${DB_SVC_NAME}.${K8S_NS}.svc.cluster.local"
           DB_URI="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
+          # postgres-credentials (for StatefulSet)
           cat > /tmp/postgres-secret.yaml <<'YAML'
           apiVersion: v1
           kind: Secret
@@ -199,6 +189,7 @@ jobs:
           sed -i "s|__USER__|${DB_USER//|/\\|}|" /tmp/postgres-secret.yaml
           sed -i "s|__PASS__|${DB_PASSWORD//|/\\|}|" /tmp/postgres-secret.yaml
 
+          # backend-secrets (for backend Deployment)
           cat > /tmp/backend-secret.yaml <<'YAML'
           apiVersion: v1
           kind: Secret
@@ -228,16 +219,21 @@ jobs:
           set -e
           mkdir -p "sealed/backend/${SUBDIR}"
           mv /tmp/postgres-credentials.sealed.yaml "sealed/backend/${SUBDIR}/postgres-credentials.sealed.yaml"
-          mv /tmp/backend-secrets.sealed.yaml     "sealed/backend/${SUBDIR}/backend-secrets.sealed.yaml"
+          mv /tmp/backend-secrets.sealed.yaml       "sealed/backend/${SUBDIR}/backend-secrets.sealed.yaml"
 
+          # Ensure sealed secrets apply FIRST
+          for f in sealed/backend/${SUBDIR}/*.sealed.yaml; do
+            yq -i '.metadata.annotations."argocd.argoproj.io/sync-wave" = "0"' "$f"
+          done
+
+          # Bump backend image tag
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)   |
-            .env.plain.DB_ENGINE_TYPE = "POSTGRES"
+            .image.tag        = strenv(IMAGE_TAG)
           ' "values/backend/${SUFFIX}.yaml"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "sealed/backend/${SUBDIR}"/*.yaml "values/backend/${SUFFIX}.yaml"
-          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (Postgres; refresh sealed secrets)" || echo "No changes"
+          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (refresh sealed secrets)" || echo "No changes"
           git push origin main
