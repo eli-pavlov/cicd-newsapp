@@ -1,8 +1,10 @@
-name: Build & Push Backend Image
+name: Build & Deploy Backend
 
 on:
   repository_dispatch:
     types: [build-backend]
+  push:
+    branches: [main, development]  # optional convenience
 
 permissions:
   contents: read
@@ -10,19 +12,47 @@ permissions:
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/newsapp-backend
+  MANIFESTS_REPO: eli-pavlov/github-actions-cicd-manifests
+  DEV_OVERLAY_NAME: development
+  PROD_OVERLAY_NAME: production   # change to 'default' if your repo uses that
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (infra)
         uses: actions/checkout@v4
 
-      # If BE is in a separate repo, add a checkout step into backend/ here.
-
-      - name: Set short SHA
+      - name: Resolve branch & SHA (prefer dispatch payload)
         id: vars
-        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+        shell: bash
+        run: |
+          # Branch can come from repository_dispatch payload, otherwise use ref_name
+          BRANCH="${{ github.event.client_payload.branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="${{ github.ref_name }}"
+          fi
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          # SHA can come from payload too (optional)
+          PAYLOAD_SHA="${{ github.event.client_payload.sha }}"
+          if [ -n "$PAYLOAD_SHA" ]; then
+            SHORT_SHA="${PAYLOAD_SHA:0:7}"
+          else
+            SHORT_SHA="$(git rev-parse --short HEAD)"
+          fi
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+          # Tagging logic like your main.yml
+          if [ "$BRANCH" = "main" ]; then
+            TAG="latest-${SHORT_SHA}"
+            ENVIRONMENT="${{ env.PROD_OVERLAY_NAME }}"
+          else
+            TAG="dev-${SHORT_SHA}"
+            ENVIRONMENT="${{ env.DEV_OVERLAY_NAME }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -43,9 +73,33 @@ jobs:
           file: ./backend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+            ${{ steps.vars.outputs.branch == 'main' && format('{0}:latest', env.IMAGE_NAME) || '' }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.short_sha }}
-            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update image tag in manifests repo
+        env:
+          TAG: ${{ steps.vars.outputs.tag }}
+          SHORT_SHA: ${{ steps.vars.outputs.short_sha }}
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+        run: |
+          git config --global user.email "ci@github.com"
+          git config --global user.name "GitHub Actions"
+
+          git clone https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ env.MANIFESTS_REPO }}.git
+          cd $(basename "${{ env.MANIFESTS_REPO }}")/manifests/overlays/${ENVIRONMENT}
+
+          # point your BE image in kustomization.yaml to the new tag
+          kustomize edit set image ${{ env.IMAGE_NAME }}=${{ env.IMAGE_NAME }}:${TAG}
+
+          git add kustomization.yaml
+          git commit -m "CI: backend -> ${TAG} (${SHORT_SHA}) for ${ENVIRONMENT}" || echo "Nothing to commit"
+          git push
