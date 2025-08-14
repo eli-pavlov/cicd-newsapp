@@ -146,6 +146,12 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Show backend files
+        run: |
+          ls -la backend || true
+          echo "--- backend/.dockerignore ---"
+          [ -f backend/.dockerignore ] && sed -n '1,200p' backend/.dockerignore || echo "(none)"
 
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
