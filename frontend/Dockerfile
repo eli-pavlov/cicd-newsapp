@@ -6,6 +6,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+# Accept build-time Vite vars (from GH Actions)
+ARG VITE_SERVER_URL
+ARG VITE_NEWS_INTERVAL_IN_MIN
+ENV VITE_SERVER_URL=$VITE_SERVER_URL
+ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
+
 # Copy source and build
 COPY . .
 RUN npm run build
@@ -17,8 +23,8 @@ WORKDIR /app
 # Clean default nginx html
 RUN rm -rf /usr/share/nginx/html/*
 
-# Copy built frontend from build stage
-COPY --from=build /app/backend/public/app /usr/share/nginx/html
+# Copy built frontend
+COPY --from=build /app/dist /usr/share/nginx/html
 
 # Copy Nginx template & entrypoint for reverse proxy config
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template

@@ -14,7 +14,7 @@ COPY . .
 # ---- runtime stage ----
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \
-    PORT=3000
+    PORT=8080
 WORKDIR /app
 
 # Copy only the production deps and app source
@@ -25,6 +25,6 @@ COPY --from=build /app ./
 RUN addgroup -S app && adduser -S app -G app
 USER app
 
-EXPOSE 3000
+EXPOSE 8080
 # Adjust if your main file differs (app.js/server.js)
 CMD ["node", "app.js"]
