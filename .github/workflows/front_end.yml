@@ -103,6 +103,10 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Copy nginx config into frontend build context
+        run: |
+          mkdir -p src/nginx
+          cp -r frontend/nginx/* src/nginx/
 
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
