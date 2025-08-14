@@ -1,55 +1,74 @@
-name: Build & Deploy Frontend
+name: Build & Push Frontend Image
 
 on:
   repository_dispatch:
     types: [build-frontend]
-  #push:
-    #branches: [main, development]  # optional convenience
+  push:
+    branches: [main, development]  # optional convenience
 
 permissions:
   contents: read
   packages: write
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/newsapp-frontend
-  MANIFESTS_REPO: eli-pavlov/github-actions-cicd-manifests
-  DEV_OVERLAY_NAME: development
-  PROD_OVERLAY_NAME: production   # change to 'default' if your repo uses that
+  MANIFEST_APP_DEFAULT: newsapp-frontend
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (infra)
+      - name: Checkout (infra repo)
         uses: actions/checkout@v4
 
-      - name: Resolve branch & SHA (prefer dispatch payload)
-        id: vars
+      - name: Resolve context from dispatch payload
+        id: ctx
         shell: bash
         run: |
-          BRANCH="${{ github.event.client_payload.branch }}"
-          if [ -z "$BRANCH" ]; then
-            BRANCH="${{ github.ref_name }}"
-          fi
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          APP="${{ github.event.client_payload.APP_NAME }}"
+          BRANCH="${{ github.event.client_payload.BRANCH_NAME }}"
+          COMMIT="${{ github.event.client_payload.COMMIT_SHA }}"
+          SHORT="${{ github.event.client_payload.SHORT_SHA }}"
 
-          PAYLOAD_SHA="${{ github.event.client_payload.sha }}"
-          if [ -n "$PAYLOAD_SHA" ]; then
-            SHORT_SHA="${PAYLOAD_SHA:0:7}"
-          else
-            SHORT_SHA="$(git rev-parse --short HEAD)"
-          fi
-          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          # Optional FE build-time config for Vite (baked during build)
+          VITE_SERVER_URL="${{ github.event.client_payload.VITE_SERVER_URL }}"
+          VITE_NEWS_INTERVAL_IN_MIN="${{ github.event.client_payload.VITE_NEWS_INTERVAL_IN_MIN }}"
+
+          [ -z "$APP" ] && APP="${MANIFEST_APP_DEFAULT}"
+          [ -z "$BRANCH" ] && BRANCH="${GITHUB_REF_NAME}"
+          [ -z "$COMMIT" ] && COMMIT="${GITHUB_SHA}"
+          [ -z "$SHORT" ] && SHORT="${COMMIT:0:7}"
+
+          test -n "${BRANCH}" && test -n "${COMMIT}" && test -n "${SHORT}"
 
           if [ "$BRANCH" = "main" ]; then
-            TAG="latest-${SHORT_SHA}"
-            ENVIRONMENT="${{ env.PROD_OVERLAY_NAME }}"
+            TAG="latest-${SHORT}"
+            LATEST="true"
+            OVERLAY="production"
           else
-            TAG="dev-${SHORT_SHA}"
-            ENVIRONMENT="${{ env.DEV_OVERLAY_NAME }}"
+            TAG="dev-${SHORT}"
+            LATEST="false"
+            OVERLAY="development"
           fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+
+          IMAGE="${DOCKERHUB_USER}/${APP}"
+
+          echo "app=$APP"           >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH"     >> $GITHUB_OUTPUT
+          echo "commit=$COMMIT"     >> $GITHUB_OUTPUT
+          echo "short=$SHORT"       >> $GITHUB_OUTPUT
+          echo "tag=$TAG"           >> $GITHUB_OUTPUT
+          echo "latest=$LATEST"     >> $GITHUB_OUTPUT
+          echo "overlay=$OVERLAY"   >> $GITHUB_OUTPUT
+          echo "image=$IMAGE"       >> $GITHUB_OUTPUT
+
+          # Pass-through FE build args only if provided
+          if [ -n "$VITE_SERVER_URL" ]; then
+            echo "vite_server_url=$VITE_SERVER_URL" >> $GITHUB_OUTPUT
+          fi
+          if [ -n "$VITE_NEWS_INTERVAL_IN_MIN" ]; then
+            echo "vite_news_interval=$VITE_NEWS_INTERVAL_IN_MIN" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -70,32 +89,15 @@ jobs:
           file: ./frontend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          # If Vite args are set in the payload, bake them in; otherwise build plain.
+          build-args: |
+            ${{ steps.ctx.outputs.vite_server_url && format('VITE_SERVER_URL={0}', steps.ctx.outputs.vite_server_url) || '' }}
+            ${{ steps.ctx.outputs.vite_news_interval && format('VITE_NEWS_INTERVAL_IN_MIN={0}', steps.ctx.outputs.vite_news_interval) || '' }}
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-            ${{ steps.vars.outputs.branch == 'main' && format('{0}:latest', env.IMAGE_NAME) || '' }}
+            ${{ steps.ctx.outputs.image }}:${{ steps.ctx.outputs.tag }}
+            ${{ steps.ctx.outputs.latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.ctx.outputs.commit }}
 
-      - name: Install kustomize
-        run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-          sudo mv kustomize /usr/local/bin/
-
-      - name: Update image tag in manifests repo
-        env:
-          TAG: ${{ steps.vars.outputs.tag }}
-          SHORT_SHA: ${{ steps.vars.outputs.short_sha }}
-          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
-        run: |
-          git config --global user.email "ci@github.com"
-          git config --global user.name "GitHub Actions"
-
-          git clone https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ env.MANIFESTS_REPO }}.git
-          cd $(basename "${{ env.MANIFESTS_REPO }}")/manifests/overlays/${ENVIRONMENT}
-
-          kustomize edit set image ${{ env.IMAGE_NAME }}=${{ env.IMAGE_NAME }}:${TAG}
-
-          git add kustomization.yaml
-          git commit -m "CI: frontend -> ${TAG} (${SHORT_SHA}) for ${ENVIRONMENT}" || echo "Nothing to commit"
-          git push
+      # -- Helm deploy will be added in the next step --
