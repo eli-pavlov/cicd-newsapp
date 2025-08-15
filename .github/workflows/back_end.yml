@@ -33,6 +33,11 @@ env:
 
 jobs:
   docker:
+    if: >-
+      ${{
+        github.event_name == 'repository_dispatch' &&
+        github.event.client_payload.app_name == 'newsapp-backend'
+      }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (this repo / infra)
