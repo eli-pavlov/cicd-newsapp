@@ -1,19 +1,19 @@
-name: Build & Push Frontend Image
+name: Build & Push Backend Image
 
 on:
   repository_dispatch:
-    types: [build-frontend]
+    types: [build-backend]
   push:
     branches: [main, development]
     paths:
-      - "frontend/**"
-      - ".github/workflows/front_end.yml"
+      - "backend/**"
+      - ".github/workflows/backend.yml"
   workflow_dispatch:
     inputs:
       source_repo:
-        description: "Owner/repo of the source (frontend) repository"
+        description: "Owner/repo of the backend source repository"
         required: true
-        default: "ghGill/newsAppFront"
+        default: "ghGill/newsAppBackend"
         type: string
       source_ref:
         description: "Ref to build (HEAD, branch, tag, or commit SHA)"
@@ -23,7 +23,7 @@ on:
       app_name:
         description: "App name used in image name"
         required: true
-        default: "newsapp-frontend"
+        default: "newsapp-backend"
         type: string
 
 permissions:
@@ -31,17 +31,17 @@ permissions:
   packages: write
 
 env:
-  MANIFEST_APP_DEFAULT: newsapp-frontend
+  MANIFEST_APP_DEFAULT: newsapp-backend
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (this repo / infra)
+      - name: Checkout (infra repo)
         uses: actions/checkout@v4
 
-      - name: Resolve context (dispatch or manual)
+      - name: Resolve context (dispatch/manual inputs)
         id: ctx
         shell: bash
         env:
@@ -50,10 +50,10 @@ jobs:
           INP_APP:  ${{ inputs.app_name }}
         run: |
           set -euo pipefail
-          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || github.event.client_payload.SOURCE_REPO || '' }}}"
-          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || github.event.client_payload.BRANCH_NAME  || '' }}}"
-          APP="${INP_APP:-${{ github.event.client_payload.app_name    || github.event.client_payload.APP_NAME    || '' }}}"
-          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppFront"
+          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || '' }}}"
+          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || '' }}}"
+          APP="${INP_APP:-${{ github.event.client_payload.app_name       || '' }}}"
+          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppBackend"
           [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
           [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
           echo "src_repo=${SRC_REPO}" >> $GITHUB_OUTPUT
@@ -62,7 +62,7 @@ jobs:
           IMAGE="${DOCKERHUB_USER}/${APP}"
           echo "image=${IMAGE}"      >> $GITHUB_OUTPUT
 
-      - name: Checkout frontend source repo
+      - name: Checkout backend source repo
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.ctx.outputs.src_repo }}
@@ -107,11 +107,6 @@ jobs:
             echo "values_suffix=dev" >> $GITHUB_OUTPUT
           fi
 
-      - name: Copy nginx config into frontend build context
-        run: |
-          mkdir -p src/nginx
-          cp -r frontend/nginx/* src/nginx/
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -128,12 +123,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./frontend/Dockerfile
+          file: ./backend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          build-args: |
-            VITE_SERVER_URL=/api
-            VITE_NEWS_INTERVAL_IN_MIN=5
           tags: |
             ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
             ${{ steps.compute-tags.outputs.is_latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
@@ -144,7 +136,7 @@ jobs:
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.MANIFESTS_REPO }}
+          repository: ${{ secrets.MANIFESTS_REPO }}
           token: ${{ secrets.GH_TOKEN }}
           path: manifests
 
@@ -155,33 +147,23 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Update frontend image & proxy env in manifests
+      - name: Bump backend image tag in manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
-          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
         run: |
           set -euo pipefail
-          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
-          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
-
-          BACKEND_NAME=$(yq -r '.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
-          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
-
+          VALUES_FILE="values/backend/${SUFFIX}.yaml"
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)  |
-            .env.plain.VITE_SERVER_URL = "/api" |
-            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
-            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
-          ' "${FRONTEND_FILE}"
+            .image.tag        = strenv(IMAGE_TAG)   |
+            .env.plain.DB_ENGINE_TYPE = "POSTGRES"
+          ' "${VALUES_FILE}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${FRONTEND_FILE}"
-          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
+          git add "${VALUES_FILE}"
+          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
           git push origin main
