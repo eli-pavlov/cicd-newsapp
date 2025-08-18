@@ -74,9 +74,6 @@ jobs:
           mkdir -p src/nginx
           cp -r frontend/nginx/* src/nginx/
 
-      - name: Place Dockerfile into source context
-        run: cp frontend/Dockerfile src/Dockerfile
-
       - name: Compute image tags
         id: compute-tags
         shell: bash
@@ -131,7 +128,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./Dockerfile
+          file: ./frontend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
