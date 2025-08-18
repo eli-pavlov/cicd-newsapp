@@ -90,23 +90,6 @@ jobs:
           echo "is_latest=${IS_LATEST}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
 
-      - name: Resolve deploy environment
-        id: deploy
-        shell: bash
-        env:
-          IS_LATEST: ${{ steps.compute-tags.outputs.is_latest }}
-        run: |
-          set -euo pipefail
-          if [[ "${IS_LATEST}" == "true" ]]; then
-            echo "env=prod" >> $GITHUB_OUTPUT
-            echo "k8s_ns=default" >> $GITHUB_OUTPUT
-            echo "values_suffix=prod" >> $GITHUB_OUTPUT
-          else
-            echo "env=dev" >> $GITHUB_OUTPUT
-            echo "k8s_ns=development" >> $GITHUB_OUTPUT
-            echo "values_suffix=dev" >> $GITHUB_OUTPUT
-          fi
-
       - name: Copy nginx config into frontend build context
         run: |
           mkdir -p src/nginx
@@ -141,7 +124,7 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # ---------- GitOps: bump FE image + FE proxy target ----------
+      # ---------- GitOps: bump FE image only (no proxy/env writes) ----------
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -156,34 +139,22 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Update frontend image & proxy env in manifests
+      - name: Bump frontend image tag in manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
-          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
         run: |
           set -euo pipefail
-
-          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
-          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
-
-          BACKEND_NAME=$(yq -r '.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
-          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
-
+          VALUES_FILE="values/frontend/${SUFFIX}.yaml"
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)  |
-            .env.plain.VITE_SERVER_URL = "/api"     |
-            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
-            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
-          ' "${FRONTEND_FILE}"
+            .image.tag        = strenv(IMAGE_TAG)
+          ' "${VALUES_FILE}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${FRONTEND_FILE}"
-          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
+          git add "${VALUES_FILE}"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
           git push origin main
