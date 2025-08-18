@@ -5,6 +5,9 @@ on:
     types: [build-frontend]
   push:
     branches: [main, development]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/front_end.yml"
   workflow_dispatch:
     inputs:
       source_repo:
