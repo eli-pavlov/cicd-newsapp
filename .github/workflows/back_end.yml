@@ -1,19 +1,19 @@
-name: Build & Push Backend Image
+name: Build & Push Frontend Image
 
 on:
   repository_dispatch:
-    types: [build-backend]
+    types: [build-frontend]
   push:
     branches: [main, development]
     paths:
-      - "backend/**"
-      - ".github/workflows/back_end.yml"
+      - "frontend/**"
+      - ".github/workflows/front_end.yml"
   workflow_dispatch:
     inputs:
       source_repo:
-        description: "Owner/repo of the source (backend) repository"
+        description: "Owner/repo of the source (frontend) repository"
         required: true
-        default: "ghGill/newsAppBackend"
+        default: "ghGill/newsAppFront"
         type: string
       source_ref:
         description: "Ref to build (HEAD, branch, tag, or commit SHA)"
@@ -23,7 +23,7 @@ on:
       app_name:
         description: "App name used in image name"
         required: true
-        default: "newsapp-backend"
+        default: "newsapp-frontend"
         type: string
 
 permissions:
@@ -31,7 +31,7 @@ permissions:
   packages: write
 
 env:
-  MANIFEST_APP_DEFAULT: newsapp-backend
+  MANIFEST_APP_DEFAULT: newsapp-frontend
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
@@ -53,7 +53,7 @@ jobs:
           SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || github.event.client_payload.SOURCE_REPO || '' }}}"
           SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || github.event.client_payload.BRANCH_NAME  || '' }}}"
           APP="${INP_APP:-${{ github.event.client_payload.app_name    || github.event.client_payload.APP_NAME    || '' }}}"
-          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppBackend"
+          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppFront"
           [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
           [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
           echo "src_repo=${SRC_REPO}" >> $GITHUB_OUTPUT
@@ -62,7 +62,7 @@ jobs:
           IMAGE="${DOCKERHUB_USER}/${APP}"
           echo "image=${IMAGE}"      >> $GITHUB_OUTPUT
 
-      - name: Checkout backend source repo
+      - name: Checkout frontend source repo
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.ctx.outputs.src_repo }}
@@ -107,6 +107,11 @@ jobs:
             echo "values_suffix=dev" >> $GITHUB_OUTPUT
           fi
 
+      - name: Copy nginx config into frontend build context
+        run: |
+          mkdir -p src/nginx
+          cp -r frontend/nginx/* src/nginx/
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -123,9 +128,12 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./backend/Dockerfile
+          file: ./frontend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VITE_SERVER_URL=/api
+            VITE_NEWS_INTERVAL_IN_MIN=5
           tags: |
             ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
             ${{ steps.compute-tags.outputs.is_latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
@@ -133,7 +141,6 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # ---------- GitOps: bump backend image only (no sealed secrets) ----------
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -148,23 +155,33 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Bump backend image tag in manifests
+      - name: Update frontend image & proxy env in manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
+          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
         run: |
           set -euo pipefail
-          VALUES_FILE="values/backend/${SUFFIX}.yaml"
+          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
+          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
+
+          BACKEND_NAME=$(yq -r '.app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)
-          ' "${VALUES_FILE}"
+            .image.tag        = strenv(IMAGE_TAG)  |
+            .env.plain.VITE_SERVER_URL = "/api" |
+            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
+            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
+            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
+          ' "${FRONTEND_FILE}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${VALUES_FILE}"
-          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
+          git add "${FRONTEND_FILE}"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
           git push origin main

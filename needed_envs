@@ -1,7 +1,13 @@
-VITE_SERVER_URL= {{VITE_SERVER_URL}}
-VITE_NEWS_INTERVAL_IN_MIN= {{VITE_NEWS_INTERVAL_IN_MIN}}
+# --- Frontend build-time (Vite) ---
+VITE_SERVER_URL={{VITE_SERVER_URL}}              # e.g. /api
+VITE_NEWS_INTERVAL_IN_MIN={{VITE_NEWS_INTERVAL_IN_MIN}}  # e.g. 5
+
+# --- Frontend runtime (Nginx proxy target) ---
+BACKEND_SERVICE_HOST={{BACKEND_SERVICE_HOST}}    # e.g. backend.default.svc.cluster.local
+BACKEND_SERVICE_PORT={{BACKEND_SERVICE_PORT}}    # e.g. 8080
+
+# --- Backend DB config (example) ---
 # MONGO | MONGOOSE | POSTGRES | MYSQL
-DB_ENGINE_TYPE= {{DB_ENGINE_TYPE}}
-# connection string : [protocol]://[username]:[password]@[host]/[database name]
-DB_URI= {{DB_URI}}
-# test
+DB_ENGINE_TYPE={{DB_ENGINE_TYPE}}
+# connection string : [protocol]://[username]:[password]@[host]:[port]/[database]
+DB_URI={{DB_URI}}

@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-lock.yaml
+.DS_Store
+.env
+*.log
+coverage
+dist
+build
+.vite
+.git
+.vscode
+Dockerfile
+.dockerignore

@@ -17,6 +17,7 @@ COPY . .
 RUN npm run build
 
 # Normalize build output to a fixed path we control (/static)
+# Handles projects that output to: dist, build, public/app, frontend/dist, backend/public/app, etc.
 RUN set -eux; \
     candidates="dist build public public/app frontend/dist backend/public/app"; \
     out=""; \
@@ -36,9 +37,11 @@ RUN set -eux; \
 FROM nginx:1.27-alpine
 WORKDIR /app
 
+# Clean default site and copy our static assets
 RUN rm -rf /usr/share/nginx/html/*
 COPY --from=build /static /usr/share/nginx/html
 
+# Nginx reverse proxy config (these files are added to build context by the workflow)
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
