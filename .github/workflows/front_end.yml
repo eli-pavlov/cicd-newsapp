@@ -33,11 +33,6 @@ env:
 
 jobs:
   docker:
-    if: >-
-        ${{
-          github.event_name == 'repository_dispatch' &&
-          github.event.client_payload.app_name == 'newsapp-frontend'
-        }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (this repo / infra)
@@ -52,9 +47,9 @@ jobs:
           INP_APP:  ${{ inputs.app_name }}
         run: |
           set -euo pipefail
-          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.SOURCE_REPO || '' }}}"
-          SRC_REF="${INP_REF:-${{ github.event.client_payload.BRANCH_NAME || '' }}}"
-          APP="${INP_APP:-${{ github.event.client_payload.APP_NAME || '' }}}"
+          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || github.event.client_payload.SOURCE_REPO || '' }}}"
+          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || github.event.client_payload.BRANCH_NAME  || '' }}}"
+          APP="${INP_APP:-${{ github.event.client_payload.app_name    || github.event.client_payload.APP_NAME    || '' }}}"
           [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppFront"
           [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
           [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
@@ -116,8 +111,10 @@ jobs:
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -151,6 +148,7 @@ jobs:
 
       - name: Install yq
         run: |
+          set -e
           YQ_VERSION=v4.44.1
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq

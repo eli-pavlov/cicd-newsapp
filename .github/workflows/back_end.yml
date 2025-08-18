@@ -33,11 +33,6 @@ env:
 
 jobs:
   docker:
-    if: >-
-      ${{
-        github.event_name == 'repository_dispatch' &&
-        github.event.client_payload.app_name == 'newsapp-backend'
-      }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (this repo / infra)
@@ -52,9 +47,9 @@ jobs:
           INP_APP:  ${{ inputs.app_name }}
         run: |
           set -euo pipefail
-          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.SOURCE_REPO || '' }}}"
-          SRC_REF="${INP_REF:-${{ github.event.client_payload.BRANCH_NAME || '' }}}"
-          APP="${INP_APP:-${{ github.event.client_payload.APP_NAME || '' }}}"
+          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || github.event.client_payload.SOURCE_REPO || '' }}}"
+          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || github.event.client_payload.BRANCH_NAME  || '' }}}"
+          APP="${INP_APP:-${{ github.event.client_payload.app_name    || github.event.client_payload.APP_NAME    || '' }}}"
           [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppBackend"
           [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
           [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
@@ -102,19 +97,19 @@ jobs:
           if [[ "${IS_LATEST}" == "true" ]]; then
             echo "env=prod" >> $GITHUB_OUTPUT
             echo "k8s_ns=default" >> $GITHUB_OUTPUT
-            echo "sealed_subdir=prod" >> $GITHUB_OUTPUT
             echo "values_suffix=prod" >> $GITHUB_OUTPUT
           else
             echo "env=dev" >> $GITHUB_OUTPUT
             echo "k8s_ns=development" >> $GITHUB_OUTPUT
-            echo "sealed_subdir=dev" >> $GITHUB_OUTPUT
             echo "values_suffix=dev" >> $GITHUB_OUTPUT
           fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -135,7 +130,7 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # ---------- GitOps: sealed secrets + bump image ----------
+      # ---------- GitOps: bump backend image only (no sealed secrets) ----------
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -143,102 +138,30 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           path: manifests
 
-      - name: Install yq & kubeseal
+      - name: Install yq
         run: |
           set -e
           YQ_VERSION=v4.44.1
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
-          KUBESEAL_VER=0.27.1
-          curl -sL "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VER}/kubeseal-${KUBESEAL_VER}-linux-amd64.tar.gz" \
-            | tar xz kubeseal
-          sudo mv kubeseal /usr/local/bin/
 
-      - name: Restore Sealed Secrets public cert
-        run: |
-          mkdir -p /tmp/cert
-          echo "${{ secrets.SEALED_SECRETS_CERT }}" | base64 -d > /tmp/cert/sealed-secrets.pem
-
-      - name: Create input Secret YAMLs (Postgres, env-aware)
-        id: mksecrets
-        working-directory: manifests
-        env:
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          K8S_NS: ${{ steps.deploy.outputs.k8s_ns }}
-        run: |
-          set -euo pipefail
-
-          # PostgreSQL service details
-          DB_SVC_NAME="postgresql"
-          DB_PORT="5432"
-          DB_HOST="${DB_SVC_NAME}.${K8S_NS}.svc.cluster.local"
-          DB_URI="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-
-          # postgres-credentials (for StatefulSet)
-          cat > /tmp/postgres-secret.yaml <<'YAML'
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: postgres-credentials
-            namespace: __NS__
-          type: Opaque
-          stringData:
-            POSTGRES_DB: __DB__
-            POSTGRES_USER: __USER__
-            POSTGRES_PASSWORD: __PASS__
-          YAML
-          sed -i "s|__NS__|${K8S_NS}|" /tmp/postgres-secret.yaml
-          sed -i "s|__DB__|${DB_NAME//|/\\|}|" /tmp/postgres-secret.yaml
-          sed -i "s|__USER__|${DB_USER//|/\\|}|" /tmp/postgres-secret.yaml
-          sed -i "s|__PASS__|${DB_PASSWORD//|/\\|}|" /tmp/postgres-secret.yaml
-
-          # backend-secrets (for backend Deployment)
-          cat > /tmp/backend-secret.yaml <<'YAML'
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: backend-secrets
-            namespace: __NS__
-          type: Opaque
-          stringData:
-            DB_URI: __URI__
-          YAML
-          sed -i "s|__NS__|${K8S_NS}|" /tmp/backend-secret.yaml
-          sed -i "s|__URI__|${DB_URI//|/\\|}|" /tmp/backend-secret.yaml
-
-      - name: Seal secrets (offline)
-        run: |
-          kubeseal --cert /tmp/cert/sealed-secrets.pem --format yaml < /tmp/postgres-secret.yaml > /tmp/postgres-credentials.sealed.yaml
-          kubeseal --cert /tmp/cert/sealed-secrets.pem --format yaml < /tmp/backend-secret.yaml  > /tmp/backend-secrets.sealed.yaml
-
-      - name: Write sealed files + bump backend image
+      - name: Bump backend image tag in manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
-          SUBDIR:     ${{ steps.deploy.outputs.sealed_subdir }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
         run: |
-          set -e
-          mkdir -p "sealed/backend/${SUBDIR}"
-          mv /tmp/postgres-credentials.sealed.yaml "sealed/backend/${SUBDIR}/postgres-credentials.sealed.yaml"
-          mv /tmp/backend-secrets.sealed.yaml       "sealed/backend/${SUBDIR}/backend-secrets.sealed.yaml"
+          set -euo pipefail
+          VALUES_FILE="values/backend/${SUFFIX}.yaml"
 
-          # Ensure sealed secrets apply FIRST
-          for f in sealed/backend/${SUBDIR}/*.sealed.yaml; do
-            yq -i '.metadata.annotations."argocd.argoproj.io/sync-wave" = "0"' "$f"
-          done
-
-          # Bump backend image tag
           yq -i '
             .image.repository = strenv(IMAGE_REPO) |
             .image.tag        = strenv(IMAGE_TAG)
-          ' "values/backend/${SUFFIX}.yaml"
+          ' "${VALUES_FILE}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "sealed/backend/${SUBDIR}"/*.yaml "values/backend/${SUFFIX}.yaml"
-          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (refresh sealed secrets)" || echo "No changes"
+          git add "${VALUES_FILE}"
+          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
           git push origin main
