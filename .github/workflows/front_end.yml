@@ -79,7 +79,6 @@ jobs:
 
       - name: Copy .dockerignore (optional)
         run: |
-          if [ -f backend/.dockerignore ]; then cp backend/.dockerignore src/.dockerignore; fi
           if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
 
 
