@@ -77,6 +77,12 @@ jobs:
       - name: Place Dockerfile into source context
         run: cp frontend/Dockerfile src/Dockerfile
 
+      - name: Copy .dockerignore (optional)
+        run: |
+          if [ -f backend/.dockerignore ]; then cp backend/.dockerignore src/.dockerignore; fi
+          if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
+
+
       - name: Compute image tags
         id: compute-tags
         shell: bash
