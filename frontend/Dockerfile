@@ -22,7 +22,7 @@ WORKDIR /app
 RUN rm -rf /usr/share/nginx/html/*
 
 # ✅ Copy the actual build output (matches your Vite log)
-COPY --from=build /app/backend/public/app /usr/share/nginx/html
+COPY --from=build /app/dist /usr/share/nginx/html
 
 # Nginx reverse proxy config
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
