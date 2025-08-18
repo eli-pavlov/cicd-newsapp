@@ -69,6 +69,9 @@ jobs:
           ref: ${{ steps.ctx.outputs.src_ref }}
           path: src
 
+      - name: Place Dockerfile into source context
+        run: cp backend/Dockerfile src/Dockerfile
+
       - name: Compute image tags
         id: compute-tags
         shell: bash
@@ -123,7 +126,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./backend/Dockerfile
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -136,7 +139,7 @@ jobs:
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.MANIFESTS_REPO }}
+          repository: ${{ secrets.MANIFESTS_REPO }}
           token: ${{ secrets.GH_TOKEN }}
           path: manifests
 
