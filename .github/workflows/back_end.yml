@@ -7,7 +7,7 @@ on:
     branches: [main, development]
     paths:
       - "backend/**"
-      - ".github/workflows/backend.yml"
+      - ".github/workflows/back_end.yml"
   workflow_dispatch:
     inputs:
       source_repo:
@@ -69,6 +69,9 @@ jobs:
           ref: ${{ steps.ctx.outputs.src_ref }}
           path: src
 
+      - name: Place Dockerfile into source context
+        run: cp backend/Dockerfile src/Dockerfile
+
       - name: Compute image tags
         id: compute-tags
         shell: bash
@@ -123,7 +126,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./backend/Dockerfile
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -147,7 +150,7 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Bump backend image tag in manifests
+      - name: Bump backend image tag in manifests (nested under .backend)
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
@@ -157,8 +160,8 @@ jobs:
           set -euo pipefail
           VALUES_FILE="values/backend/${SUFFIX}.yaml"
           yq -i '
-            .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)
+            .backend.image.repository = strenv(IMAGE_REPO) |
+            .backend.image.tag        = strenv(IMAGE_TAG)
           ' "${VALUES_FILE}"
 
           git config user.name  "github-actions[bot]"

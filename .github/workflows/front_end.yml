@@ -7,7 +7,7 @@ on:
     branches: [main, development]
     paths:
       - "frontend/**"
-      - ".github/workflows/frontend.yml"
+      - ".github/workflows/front_end.yml"
   workflow_dispatch:
     inputs:
       source_repo:
@@ -69,6 +69,14 @@ jobs:
           ref: ${{ steps.ctx.outputs.src_ref }}
           path: src
 
+      - name: Copy nginx config into frontend build context
+        run: |
+          mkdir -p src/nginx
+          cp -r frontend/nginx/* src/nginx/
+
+      - name: Place Dockerfile into source context
+        run: cp frontend/Dockerfile src/Dockerfile
+
       - name: Compute image tags
         id: compute-tags
         shell: bash
@@ -107,11 +115,6 @@ jobs:
             echo "values_suffix=dev" >> $GITHUB_OUTPUT
           fi
 
-      - name: Copy nginx config into frontend build context
-        run: |
-          mkdir -p src/nginx
-          cp -r frontend/nginx/* src/nginx/
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -128,7 +131,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./src
-          file: ./frontend/Dockerfile
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
@@ -144,7 +147,7 @@ jobs:
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ secrets.MANIFESTS_REPO }}
+          repository: ${{ vars.MANIFESTS_REPO }}
           token: ${{ secrets.GH_TOKEN }}
           path: manifests
 
@@ -155,7 +158,7 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Update frontend image & FE->BE proxy env in manifests
+      - name: Update frontend image & FE->BE proxy env in manifests (nested .frontend)
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
@@ -167,17 +170,17 @@ jobs:
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
 
-          BACKEND_NAME=$(yq -r '.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
           yq -i '
-            .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)  |
-            .env.plain.VITE_SERVER_URL = "/api" |
-            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
-            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
+            .frontend.image.repository = strenv(IMAGE_REPO) |
+            .frontend.image.tag        = strenv(IMAGE_TAG)  |
+            .frontend.env.plain.VITE_SERVER_URL = "/api" |
+            .frontend.env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
+            .frontend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
+            .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
           git config user.name  "github-actions[bot]"
