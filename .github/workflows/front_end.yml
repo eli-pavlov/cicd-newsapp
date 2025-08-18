@@ -90,6 +90,19 @@ jobs:
           echo "is_latest=${IS_LATEST}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
 
+      - name: Resolve deploy environment
+        id: deploy
+        shell: bash
+        env:
+          IS_LATEST: ${{ steps.compute-tags.outputs.is_latest }}
+        run: |
+          set -euo pipefail
+          if [[ "${IS_LATEST}" == "true" ]]; then
+            echo "values_suffix=prod" >> $GITHUB_OUTPUT
+          else
+            echo "values_suffix=dev" >> $GITHUB_OUTPUT
+          fi
+
       - name: Copy nginx config into frontend build context
         run: |
           mkdir -p src/nginx
@@ -124,7 +137,6 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # ---------- GitOps: bump FE image only (no proxy/env writes) ----------
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -152,7 +164,6 @@ jobs:
             .image.repository = strenv(IMAGE_REPO) |
             .image.tag        = strenv(IMAGE_TAG)
           ' "${VALUES_FILE}"
-
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${VALUES_FILE}"
