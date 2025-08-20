@@ -35,17 +35,26 @@ RUN set -eux; \
 
 # ---- serve stage ----
 FROM nginx:1.27-alpine
-WORKDIR /app
+# The nginx:alpine image already has a non-root user 'nginx' (uid/gid 101)
 
-# Clean default site and copy our static assets
-RUN rm -rf /usr/share/nginx/html/*
+# Copy static assets
 COPY --from=build /static /usr/share/nginx/html
 
-# Nginx reverse proxy config (these files are added to build context by the workflow)
+# Copy Nginx config template and entrypoint
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 80
+# Nginx needs to write to these directories at runtime.
+# We change their ownership to the 'nginx' user.
+RUN chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d \
+    && touch /var/run/nginx.pid && chown -R nginx:nginx /var/run/nginx.pid
+
+# Switch to the non-root user
+USER nginx
+
+# Expose the new port
+EXPOSE 8080
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
