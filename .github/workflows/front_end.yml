@@ -36,7 +36,7 @@ env:
 
 jobs:
   docker:
-    if: github.event.client_payload.originator == 'backend'
+    if: github.event.client_payload.originator == 'frontend'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (infra repo)
