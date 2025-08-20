@@ -18,7 +18,7 @@ on:
       source_ref:
         description: "Ref to build (HEAD, branch, tag, or commit SHA)"
         required: true
-        default: "HEAD"
+        default: "main"
         type: string
       app_name:
         description: "App name used in image name"
@@ -36,7 +36,7 @@ env:
 
 jobs:
   docker:
-    if: github.event.client_payload.originator == 'frontend'
+    if: github.event.client_payload.originator == 'frontend' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (infra repo)
@@ -55,7 +55,7 @@ jobs:
           SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || '' }}}"
           APP="${INP_APP:-${{ github.event.client_payload.app_name       || '' }}}"
           [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppFront"
-          [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
+          [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-main}"
           [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
           echo "src_repo=${SRC_REPO}" >> $GITHUB_OUTPUT
           echo "src_ref=${SRC_REF}"  >> $GITHUB_OUTPUT
