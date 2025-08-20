@@ -1353,6 +1353,431 @@ jobs:
       - name: Copy .dockerignore
         run: |
           if [ -f backend/.dockerignore ]; then cp backend/.dockerignore src/.dockerignore; fi
+
+      - name: Compute image tags
+        id: compute-tags
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse HEAD)
+          SHORT=${COMMIT:0:7}
+          BRANCH=$(git rev-parse --abbrev-ref HEAD || echo "")
+          if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+            TAG="latest-${SHORT}"
+            IS_LATEST="true"
+          else
+            TAG="dev-${SHORT}"
+            IS_LATEST="false"
+          fi
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "is_latest=${IS_LATEST}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+      - name: Resolve deploy environment
+        id: deploy
+        shell: bash
+        env:
+          IS_LATEST: ${{ steps.compute-tags.outputs.is_latest }}
+        run: |
+          set -euo pipefail
+          if [[ "${IS_LATEST}" == "true" ]]; then
+            echo "env=prod" >> $GITHUB_OUTPUT
+            echo "k8s_ns=default" >> $GITHUB_OUTPUT
+            echo "values_suffix=prod" >> $GITHUB_OUTPUT
+          else
+            echo "env=dev" >> $GITHUB_OUTPUT
+            echo "k8s_ns=development" >> $GITHUB_OUTPUT
+            echo "values_suffix=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
+            ${{ steps.compute-tags.outputs.is_latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
+            org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Checkout manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MANIFESTS_REPO }}
+          token: ${{ secrets.GH_TOKEN }}
+          path: manifests
+
+      - name: Install yq
+        run: |
+          set -e
+          YQ_VERSION=v4.44.1
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Bump backend image tag in manifests (nested under .backend)
+        working-directory: manifests
+        env:
+          IMAGE_REPO: ${{ steps.ctx.outputs.image }}
+          IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
+          SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
+        run: |
+          set -euo pipefail
+          VALUES_FILE="values/backend/${SUFFIX}.yaml"
+          yq -i '
+            .backend.image.repository = strenv(IMAGE_REPO) |
+            .backend.image.tag        = strenv(IMAGE_TAG)
+          ' "${VALUES_FILE}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${VALUES_FILE}"
+          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
+          git push origin main
+
+// .github/workflows/front_end.yml
+name: Build & Push Frontend Image
+
+on:
+  repository_dispatch:
+    types: [build-frontend]
+  push:
+    branches: [main, development]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/front_end.yml"
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "Owner/repo of the frontend source repository"
+        required: true
+        default: "ghGill/newsAppFront"
+        type: string
+      source_ref:
+        description: "Ref to build (HEAD, branch, tag, or commit SHA)"
+        required: true
+        default: "HEAD"
+        type: string
+      app_name:
+        description: "App name used in image name"
+        required: true
+        default: "newsapp-frontend"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  MANIFEST_APP_DEFAULT: newsapp-frontend
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (infra repo)
+        uses: actions/checkout@v4
+
+      - name: Resolve context (dispatch/manual inputs)
+        id: ctx
+        shell: bash
+        env:
+          INP_REPO: ${{ inputs.source_repo }}
+          INP_REF:  ${{ inputs.source_ref }}
+          INP_APP:  ${{ inputs.app_name }}
+        run: |
+          set -euo pipefail
+          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || '' }}}"
+          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || '' }}}"
+          APP="${INP_APP:-${{ github.event.client_payload.app_name       || '' }}}"
+          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppFront"
+          [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
+          [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
+          echo "src_repo=${SRC_REPO}" >> $GITHUB_OUTPUT
+          echo "src_ref=${SRC_REF}"  >> $GITHUB_OUTPUT
+          echo "app=${APP}"          >> $GITHUB_OUTPUT
+          IMAGE="${DOCKERHUB_USER}/${APP}"
+          echo "image=${IMAGE}"      >> $GITHUB_OUTPUT
+
+      - name: Checkout frontend source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.ctx.outputs.src_repo }}
+          ref: ${{ steps.ctx.outputs.src_ref }}
+          path: src
+
+      - name: Copy nginx config into frontend build context
+        run: |
+          mkdir -p src/nginx
+          cp -r frontend/nginx/* src/nginx/
+
+      - name: Place Dockerfile into source context
+        run: cp frontend/Dockerfile src/Dockerfile
+
+      - name: Copy .dockerignore (optional)
+        run: |
+          if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
+
+
+      - name: Compute image tags
+        id: compute-tags
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse HEAD)
+          SHORT=${COMMIT:0:7}
+          BRANCH=$(git rev-parse --abbrev-ref HEAD || echo "")
+          if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+            TAG="latest-${SHORT}"
+            IS_LATEST="true"
+          else
+            TAG="dev-${SHORT}"
+            IS_LATEST="false"
+          fi
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "is_latest=${IS_LATEST}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+      - name: Resolve deploy environment
+        id: deploy
+        shell: bash
+        env:
+          IS_LATEST: ${{ steps.compute-tags.outputs.is_latest }}
+        run: |
+          set -euo pipefail
+          if [[ "${IS_LATEST}" == "true" ]]; then
+            echo "env=prod" >> $GITHUB_OUTPUT
+            echo "k8s_ns=default" >> $GITHUB_OUTPUT
+            echo "values_suffix=prod" >> $GITHUB_OUTPUT
+          else
+            echo "env=dev" >> $GITHUB_OUTPUT
+            echo "k8s_ns=development" >> $GITHUB_OUTPUT
+            echo "values_suffix=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VITE_SERVER_URL=/api
+            VITE_NEWS_INTERVAL_IN_MIN=5
+          tags: |
+            ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
+            ${{ steps.compute-tags.outputs.is_latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
+            org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Checkout manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MANIFESTS_REPO }}
+          token: ${{ secrets.GH_TOKEN }}
+          path: manifests
+
+      - name: Install yq
+        run: |
+          set -e
+          YQ_VERSION=v4.44.1
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Update frontend image & FE->BE proxy env in manifests (nested .frontend)
+        working-directory: manifests
+        env:
+          IMAGE_REPO: ${{ steps.ctx.outputs.image }}
+          IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
+          SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
+          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
+        run: |
+          set -euo pipefail
+          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
+          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
+
+          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
+
+          yq -i '
+            .frontend.image.repository = strenv(IMAGE_REPO) |
+            .frontend.image.tag        = strenv(IMAGE_TAG)  |
+            .frontend.env.plain.VITE_SERVER_URL = "/api" |
+            .frontend.env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
+            .frontend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
+            .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
+          ' "${FRONTEND_FILE}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${FRONTEND_FILE}"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes"
+          git push origin main
+
+// backend/.dockerignore
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-lock.yaml
+.DS_Store
+.env
+*.log
+coverage
+dist
+build
+.git
+.vscode
+Dockerfile
+.dockerignore
+
+// backend/Dockerfile
+# ---- build stage ----
+FROM node:22-alpine AS build
+WORKDIR /app
+
+# Install deps first for better caching
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy the rest and (optionally) build if you transpile; if not, skip
+COPY . .
+# If you use TypeScript or a build step, uncomment:
+# RUN npm run build
+
+# ---- runtime stage ----
+FROM node:22-alpine AS runtime
+ENV NODE_ENV=production \
+    PORT=8080
+WORKDIR /app
+
+# Copy only the production deps and app source
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app ./
+
+# Create non-root user for safety
+RUN addgroup -S app && adduser -S app -G app
+USER app
+
+EXPOSE 8080
+# Adjust if your main file differs (app.js/server.js)
+CMD ["node", "app.js"]
+
+// combined.txt
+// .dockerignore
+
+
+// .github/workflows/back_end.yml
+name: Build & Push Backend Image
+
+on:
+  repository_dispatch:
+    types: [build-backend]
+  push:
+    branches: [main, development]
+    paths:
+      - "backend/**"
+      - ".github/workflows/back_end.yml"
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "Owner/repo of the backend source repository"
+        required: true
+        default: "ghGill/newsAppBackend"
+        type: string
+      source_ref:
+        description: "Ref to build (HEAD, branch, tag, or commit SHA)"
+        required: true
+        default: "HEAD"
+        type: string
+      app_name:
+        description: "App name used in image name"
+        required: true
+        default: "newsapp-backend"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  MANIFEST_APP_DEFAULT: newsapp-backend
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (infra repo)
+        uses: actions/checkout@v4
+
+      - name: Resolve context (dispatch/manual inputs)
+        id: ctx
+        shell: bash
+        env:
+          INP_REPO: ${{ inputs.source_repo }}
+          INP_REF:  ${{ inputs.source_ref }}
+          INP_APP:  ${{ inputs.app_name }}
+        run: |
+          set -euo pipefail
+          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || '' }}}"
+          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || '' }}}"
+          APP="${INP_APP:-${{ github.event.client_payload.app_name       || '' }}}"
+          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppBackend"
+          [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-HEAD}"
+          [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
+          echo "src_repo=${SRC_REPO}" >> $GITHUB_OUTPUT
+          echo "src_ref=${SRC_REF}"  >> $GITHUB_OUTPUT
+          echo "app=${APP}"          >> $GITHUB_OUTPUT
+          IMAGE="${DOCKERHUB_USER}/${APP}"
+          echo "image=${IMAGE}"      >> $GITHUB_OUTPUT
+
+      - name: Checkout backend source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.ctx.outputs.src_repo }}
+          ref: ${{ steps.ctx.outputs.src_ref }}
+          path: src
+
+      - name: Place Dockerfile into source context
+        run: cp backend/Dockerfile src/Dockerfile
+      - name: Copy .dockerignore
+        run: |
+          if [ -f backend/.dockerignore ]; then cp backend/.dockerignore src/.dockerignore; fi
           if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
 
 
@@ -5199,366 +5624,6 @@ VITE_NEWS_INTERVAL_IN_MIN={{VITE_NEWS_INTERVAL_IN_MIN}}  # e.g. 5
 # --- Frontend runtime (Nginx proxy target) ---
 BACKEND_SERVICE_HOST={{BACKEND_SERVICE_HOST}}    # e.g. backend.default.svc.cluster.local
 BACKEND_SERVICE_PORT={{BACKEND_SERVICE_PORT}}    # e.g. 8080
-
-# --- Backend DB config (example) ---
-# MONGO | MONGOOSE | POSTGRES | MYSQL
-DB_ENGINE_TYPE={{DB_ENGINE_TYPE}}
-# connection string : [protocol]://[username]:[password]@[host]:[port]/[database]
-DB_URI={{DB_URI}}
-
-// frontend/.dockerignore
-node_modules
-npm-debug.log
-yarn-error.log
-pnpm-lock.yaml
-.DS_Store
-.env
-*.log
-coverage
-dist
-build
-.vite
-.git
-.vscode
-Dockerfile
-.dockerignore
-
-// frontend/Dockerfile
-# ---- build stage ----
-FROM node:22-alpine AS build
-WORKDIR /app
-
-# Install deps (dev deps are needed to build)
-COPY package*.json ./
-RUN npm ci
-
-# Build-time config for Vite
-ARG VITE_SERVER_URL
-ARG VITE_NEWS_INTERVAL_IN_MIN
-ENV VITE_SERVER_URL=$VITE_SERVER_URL
-ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
-
-# Bring in the source and build
-COPY . .
-RUN npm run build
-
-# Normalize build output to a fixed path we control (/static)
-# Handles projects that output to: dist, build, public/app, frontend/dist, backend/public/app, etc.
-RUN set -eux; \
-    candidates="dist build public public/app frontend/dist backend/public/app"; \
-    out=""; \
-    for p in $candidates; do \
-      if [ -d "/app/$p" ] && [ "$(ls -A "/app/$p")" ]; then out="/app/$p"; break; fi; \
-    done; \
-    if [ -z "$out" ]; then \
-      echo "No build output found in: $candidates"; \
-      echo "Top-level /app listing:"; ls -la /app; \
-      echo "Searching for likely build dirs..."; \
-      find /app -maxdepth 3 -type d \( -name dist -o -name build -o -path '*/public/app' \) -print; \
-      exit 1; \
-    fi; \
-    mkdir -p /static && cp -R "$out"/. /static/
-
-# ---- serve stage ----
-FROM nginx:1.27-alpine
-WORKDIR /app
-
-# Clean default site and copy our static assets
-RUN rm -rf /usr/share/nginx/html/*
-COPY --from=build /static /usr/share/nginx/html
-
-# Nginx reverse proxy config (these files are added to build context by the workflow)
-COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY nginx/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-EXPOSE 80
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["nginx", "-g", "daemon off;"]
-
-// frontend/nginx/default.conf.template
-server {
-  listen 80;
-  server_name _;
-
-  root /usr/share/nginx/html;
-  index index.html;
-
-  # Single page app fallback
-  location / {
-    try_files $uri $uri/ /index.html;
-  }
-
-  # Proxy API -> backend svc in the same namespace (templated)
-  location /api/ {
-    proxy_pass http://$BACKEND_SERVICE_HOST:$BACKEND_SERVICE_PORT/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-  }
-}
-
-// frontend/nginx/entrypoint.sh
-#!/bin/sh
-set -eu
-
-NS="${POD_NAMESPACE:-default}"
-: "${BACKEND_SERVICE_HOST:=backend.${NS}.svc.cluster.local}"
-: "${BACKEND_SERVICE_PORT:=8080}"
-
-envsubst '$BACKEND_SERVICE_HOST $BACKEND_SERVICE_PORT' \
-  < /etc/nginx/templates/default.conf.template \
-  > /etc/nginx/conf.d/default.conf
-
-exec "$@"
-
-// needed_envs
-# --- Frontend build-time (Vite) ---
-VITE_SERVER_URL={{VITE_SERVER_URL}}                    # e.g. /api
-VITE_NEWS_INTERVAL_IN_MIN={{VITE_NEWS_INTERVAL_IN_MIN}}  # e.g. 5
-
-# --- Frontend runtime (Nginx proxy target) ---
-BACKEND_SERVICE_HOST={{BACKEND_SERVICE_HOST}}          # e.g. backend.default.svc.cluster.local
-BACKEND_SERVICE_PORT={{BACKEND_SERVICE_PORT}}          # e.g. 8080
-
-# --- Backend DB config (example) ---
-# MONGO | MONGOOSE | POSTGRES | MYSQL
-DB_ENGINE_TYPE={{DB_ENGINE_TYPE}}
-# connection string : [protocol]://[username]:[password]@[host]:[port]/[database]
-DB_URI={{DB_URI}}
-
-// frontend/.dockerignore
-node_modules
-npm-debug.log
-yarn-error.log
-pnpm-lock.yaml
-.DS_Store
-.env
-*.log
-coverage
-dist
-build
-.vite
-.git
-.vscode
-Dockerfile
-.dockerignore
-
-// frontend/Dockerfile
-# ---- build stage ----
-FROM node:22-alpine AS build
-WORKDIR /app
-
-# Install deps (dev deps are needed to build)
-COPY package*.json ./
-RUN npm ci
-
-# Build-time config for Vite
-ARG VITE_SERVER_URL
-ARG VITE_NEWS_INTERVAL_IN_MIN
-ENV VITE_SERVER_URL=$VITE_SERVER_URL
-ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
-
-# Bring in the source and build
-COPY . .
-RUN npm run build
-
-# Normalize build output to a fixed path we control (/static)
-# Handles projects that output to: dist, build, public/app, frontend/dist, backend/public/app, etc.
-RUN set -eux; \
-    candidates="dist build public public/app frontend/dist backend/public/app"; \
-    out=""; \
-    for p in $candidates; do \
-      if [ -d "/app/$p" ] && [ "$(ls -A "/app/$p")" ]; then out="/app/$p"; break; fi; \
-    done; \
-    if [ -z "$out" ]; then \
-      echo "No build output found in: $candidates"; \
-      echo "Top-level /app listing:"; ls -la /app; \
-      echo "Searching for likely build dirs..."; \
-      find /app -maxdepth 3 -type d \( -name dist -o -name build -o -path '*/public/app' \) -print; \
-      exit 1; \
-    fi; \
-    mkdir -p /static && cp -R "$out"/. /static/
-
-# ---- serve stage ----
-FROM nginx:1.27-alpine
-WORKDIR /app
-
-# Clean default site and copy our static assets
-RUN rm -rf /usr/share/nginx/html/*
-COPY --from=build /static /usr/share/nginx/html
-
-# Nginx reverse proxy config (these files are added to build context by the workflow)
-COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY nginx/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-EXPOSE 80
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["nginx", "-g", "daemon off;"]
-
-// frontend/nginx/default.conf.template
-server {
-  listen 80;
-  server_name _;
-
-  root /usr/share/nginx/html;
-  index index.html;
-
-  # Single page app fallback
-  location / {
-    try_files $uri $uri/ /index.html;
-  }
-
-  # Proxy API -> backend svc in the same namespace (templated)
-  location /api/ {
-    proxy_pass http://$BACKEND_SERVICE_HOST:$BACKEND_SERVICE_PORT/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-  }
-}
-
-// frontend/nginx/entrypoint.sh
-#!/bin/sh
-set -eu
-
-NS="${POD_NAMESPACE:-default}"
-: "${BACKEND_SERVICE_HOST:=backend.${NS}.svc.cluster.local}"
-: "${BACKEND_SERVICE_PORT:=8080}"
-
-envsubst '$BACKEND_SERVICE_HOST $BACKEND_SERVICE_PORT' \
-  < /etc/nginx/templates/default.conf.template \
-  > /etc/nginx/conf.d/default.conf
-
-exec "$@"
-
-// needed_envs
-# --- Frontend build-time (Vite) ---
-VITE_SERVER_URL={{VITE_SERVER_URL}}                    # e.g. /api
-VITE_NEWS_INTERVAL_IN_MIN={{VITE_NEWS_INTERVAL_IN_MIN}}  # e.g. 5
-
-# --- Frontend runtime (Nginx proxy target) ---
-BACKEND_SERVICE_HOST={{BACKEND_SERVICE_HOST}}          # e.g. backend.default.svc.cluster.local
-BACKEND_SERVICE_PORT={{BACKEND_SERVICE_PORT}}          # e.g. 8080
-
-# --- Backend DB config (example) ---
-# MONGO | MONGOOSE | POSTGRES | MYSQL
-DB_ENGINE_TYPE={{DB_ENGINE_TYPE}}
-# connection string : [protocol]://[username]:[password]@[host]:[port]/[database]
-DB_URI={{DB_URI}}
-
-// frontend/.dockerignore
-node_modules
-npm-debug.log
-yarn-error.log
-pnpm-lock.yaml
-.DS_Store
-.env
-*.log
-coverage
-dist
-build
-.vite
-.git
-.vscode
-Dockerfile
-.dockerignore
-
-// frontend/Dockerfile
-# ---- build stage ----
-FROM node:22-alpine AS build
-WORKDIR /app
-
-# Install deps (dev deps are needed to build)
-COPY package*.json ./
-RUN npm ci
-
-# Build-time config for Vite
-ARG VITE_SERVER_URL
-ARG VITE_NEWS_INTERVAL_IN_MIN
-ENV VITE_SERVER_URL=$VITE_SERVER_URL
-ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
-
-# Bring in the source and build
-COPY . .
-RUN npm run build
-
-# Normalize build output to a fixed path we control (/static)
-# Handles projects that output to: dist, build, public/app, frontend/dist, backend/public/app, etc.
-RUN set -eux; \
-    candidates="dist build public public/app frontend/dist backend/public/app"; \
-    out=""; \
-    for p in $candidates; do \
-      if [ -d "/app/$p" ] && [ "$(ls -A "/app/$p")" ]; then out="/app/$p"; break; fi; \
-    done; \
-    if [ -z "$out" ]; then \
-      echo "No build output found in: $candidates"; \
-      echo "Top-level /app listing:"; ls -la /app; \
-      echo "Searching for likely build dirs..."; \
-      find /app -maxdepth 3 -type d \( -name dist -o -name build -o -path '*/public/app' \) -print; \
-      exit 1; \
-    fi; \
-    mkdir -p /static && cp -R "$out"/. /static/
-
-# ---- serve stage ----
-FROM nginx:1.27-alpine
-WORKDIR /app
-
-# Clean default site and copy our static assets
-RUN rm -rf /usr/share/nginx/html/*
-COPY --from=build /static /usr/share/nginx/html
-
-# Nginx reverse proxy config (these files are added to build context by the workflow)
-COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY nginx/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-EXPOSE 80
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["nginx", "-g", "daemon off;"]
-
-// frontend/nginx/default.conf.template
-server {
-  listen 80;
-  server_name _;
-
-  root /usr/share/nginx/html;
-  index index.html;
-
-  # Single page app fallback
-  location / {
-    try_files $uri $uri/ /index.html;
-  }
-
-  # Proxy API -> backend svc in the same namespace (templated)
-  location /api/ {
-    proxy_pass http://$BACKEND_SERVICE_HOST:$BACKEND_SERVICE_PORT/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-  }
-}
-
-// frontend/nginx/entrypoint.sh
-#!/bin/sh
-set -eu
-
-NS="${POD_NAMESPACE:-default}"
-: "${BACKEND_SERVICE_HOST:=backend.${NS}.svc.cluster.local}"
-: "${BACKEND_SERVICE_PORT:=8080}"
-
-envsubst '$BACKEND_SERVICE_HOST $BACKEND_SERVICE_PORT' \
-  < /etc/nginx/templates/default.conf.template \
-  > /etc/nginx/conf.d/default.conf
-
-exec "$@"
-
-// needed_envs
-# --- Frontend build-time (Vite) ---
-VITE_SERVER_URL={{VITE_SERVER_URL}}                    # e.g. /api
-VITE_NEWS_INTERVAL_IN_MIN={{VITE_NEWS_INTERVAL_IN_MIN}}  # e.g. 5
-
-# --- Frontend runtime (Nginx proxy target) ---
-BACKEND_SERVICE_HOST={{BACKEND_SERVICE_HOST}}          # e.g. backend.default.svc.cluster.local
-BACKEND_SERVICE_PORT={{BACKEND_SERVICE_PORT}}          # e.g. 8080
 
 # --- Backend DB config (example) ---
 # MONGO | MONGOOSE | POSTGRES | MYSQL
