@@ -2,7 +2,7 @@ name: Build & Push Frontend Image
 
 on:
   repository_dispatch:
-    types: [build-frontend]
+    types: [frontendbuild-frontend]
   push:
     branches: [main, development]
     paths:

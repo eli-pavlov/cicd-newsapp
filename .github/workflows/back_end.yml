@@ -1,8 +1,7 @@
 name: Build & Push Backend Image
-
 on:
   repository_dispatch:
-    types: [build-backend]
+    types: [backend, build-backend]
   push:
     branches: [main, development]
     paths:
