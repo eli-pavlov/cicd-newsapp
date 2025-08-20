@@ -1,7 +1,7 @@
 name: Build & Push Backend Image
 on:
   repository_dispatch:
-    types: [backend, build-backend]
+    types: [backend]
   push:
     branches: [main, development]
     paths:
@@ -35,6 +35,7 @@ env:
 
 jobs:
   docker:
+    if: github.event.client_payload.originator == 'backend'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (infra repo)
