@@ -27,4 +27,5 @@ USER app
 
 EXPOSE 8080
 # Adjust if your main file differs (app.js/server.js)
-CMD ["node", "app.js"]
+CMD ["node", "./app.js"]
+
