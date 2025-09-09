@@ -132,6 +132,8 @@ jobs:
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
         with:
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           context: ./src
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
@@ -316,6 +318,8 @@ jobs:
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
         with:
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           context: ./src
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
@@ -422,6 +426,9 @@ USER app
 EXPOSE 8080
 # Adjust if your main file differs (app.js/server.js)
 CMD ["node", "app.js"]
+
+// combined.txt
+
 
 // frontend/.dockerignore
 node_modules

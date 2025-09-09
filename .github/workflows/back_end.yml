@@ -32,35 +32,41 @@ permissions:
 env:
   MANIFEST_APP_DEFAULT: newsapp-backend
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+  MANIFESTS_BRANCH: main
 
 jobs:
   docker:
-    if: github.event.client_payload.originator == 'backend' || github.event_name == 'push'
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'backend')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (infra repo)
+      - name: Checkout (CI/CD repo)
         uses: actions/checkout@v4
 
-      - name: Resolve context (dispatch/manual inputs)
+      - name: Resolve context
         id: ctx
         shell: bash
         env:
           INP_REPO: ${{ inputs.source_repo }}
           INP_REF:  ${{ inputs.source_ref }}
           INP_APP:  ${{ inputs.app_name }}
+          CP_REPO:  ${{ github.event.client_payload.source_repo }}
+          CP_REF:   ${{ github.event.client_payload.source_ref }}
+          CP_APP:   ${{ github.event.client_payload.app_name }}
         run: |
           set -euo pipefail
-          SRC_REPO="${INP_REPO:-${{ github.event.client_payload.source_repo || '' }}}"
-          SRC_REF="${INP_REF:-${{ github.event.client_payload.source_ref  || '' }}}"
-          APP="${INP_APP:-${{ github.event.client_payload.app_name       || '' }}}"
-          [ -z "${SRC_REPO}" ] && SRC_REPO="ghGill/newsAppBackend"
-          [ -z "${SRC_REF}" ] && SRC_REF="${GITHUB_REF_NAME:-main}"
-          [ -z "${APP}" ] && APP="${MANIFEST_APP_DEFAULT}"
-          echo "src_repo=${SRC_REPO}" >> $GITHUB_OUTPUT
-          echo "src_ref=${SRC_REF}"  >> $GITHUB_OUTPUT
-          echo "app=${APP}"          >> $GITHUB_OUTPUT
+          SRC_REPO="${INP_REPO:-${CP_REPO:-ghGill/newsAppBackend}}"
+          SRC_REF="${INP_REF:-${CP_REF:-${GITHUB_REF_NAME:-main}}}"
+          APP="${INP_APP:-${CP_APP:-$MANIFEST_APP_DEFAULT}}"
           IMAGE="${DOCKERHUB_USER}/${APP}"
-          echo "image=${IMAGE}"      >> $GITHUB_OUTPUT
+          {
+            echo "src_repo=${SRC_REPO}"
+            echo "src_ref=${SRC_REF}"
+            echo "app=${APP}"
+            echo "image=${IMAGE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout backend source repo
         uses: actions/checkout@v4
@@ -69,10 +75,9 @@ jobs:
           ref: ${{ steps.ctx.outputs.src_ref }}
           path: src
 
-      - name: Place Dockerfile into source context
-        run: cp backend/Dockerfile src/Dockerfile
-      - name: Copy .dockerignore
+      - name: Prepare build context
         run: |
+          cp backend/Dockerfile src/Dockerfile
           if [ -f backend/.dockerignore ]; then cp backend/.dockerignore src/.dockerignore; fi
 
       - name: Compute image tags
@@ -83,7 +88,7 @@ jobs:
           set -euo pipefail
           COMMIT=$(git rev-parse HEAD)
           SHORT=${COMMIT:0:7}
-          BRANCH=$(git rev-parse --abbrev-ref HEAD || echo "")
+          BRANCH=$(git rev-parse --abbrev-ref HEAD || true)
           if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
             TAG="latest-${SHORT}"
             IS_LATEST="true"
@@ -91,10 +96,12 @@ jobs:
             TAG="dev-${SHORT}"
             IS_LATEST="false"
           fi
-          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "is_latest=${IS_LATEST}" >> $GITHUB_OUTPUT
-          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+          {
+            echo "commit=${COMMIT}"
+            echo "tag=${TAG}"
+            echo "is_latest=${IS_LATEST}"
+            echo "branch=${BRANCH}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Resolve deploy environment
         id: deploy
@@ -104,19 +111,19 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${IS_LATEST}" == "true" ]]; then
-            echo "env=prod" >> $GITHUB_OUTPUT
-            echo "k8s_ns=default" >> $GITHUB_OUTPUT
-            echo "values_suffix=prod" >> $GITHUB_OUTPUT
+            echo "env=prod" >> "$GITHUB_OUTPUT"
+            echo "k8s_ns=default" >> "$GITHUB_OUTPUT"
+            echo "values_suffix=prod" >> "$GITHUB_OUTPUT"
           else
-            echo "env=dev" >> $GITHUB_OUTPUT
-            echo "k8s_ns=development" >> $GITHUB_OUTPUT
-            echo "values_suffix=dev" >> $GITHUB_OUTPUT
+            echo "env=dev" >> "$GITHUB_OUTPUT"
+            echo "k8s_ns=development" >> "$GITHUB_OUTPUT"
+            echo "values_suffix=dev" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Buildx
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
@@ -124,6 +131,25 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Assemble tags
+        id: tags
+        shell: bash
+        env:
+          IMAGE: ${{ steps.ctx.outputs.image }}
+          TAG:   ${{ steps.compute-tags.outputs.tag }}
+          LATEST: ${{ steps.compute-tags.outputs.is_latest }}
+        run: |
+          set -euo pipefail
+          # Build the tags directly into the heredoc for clarity and robustness.
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${TAG}"
+            if [[ "${LATEST}" == "true" ]]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v6
@@ -134,9 +160,7 @@ jobs:
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
-            ${{ steps.compute-tags.outputs.is_latest == 'true' && format('{0}:latest', steps.ctx.outputs.image) || '' }}
+          tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
@@ -155,12 +179,13 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Bump backend image tag in manifests (nested under .backend)
+      - name: Bump backend image tag in manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
+          BRANCH:     ${{ env.MANIFESTS_BRANCH }}
         run: |
           set -euo pipefail
           VALUES_FILE="values/backend/${SUFFIX}.yaml"
@@ -172,5 +197,5 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${VALUES_FILE}"
-          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes"
-          git push origin main
+          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
+          git push origin "${BRANCH}"
