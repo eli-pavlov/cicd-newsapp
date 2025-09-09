@@ -191,7 +191,13 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Bump backend image tag in manifests
+      - name: Install Helm
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
+
+      - name: Bump backend image tag and lint manifests
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
@@ -200,11 +206,22 @@ jobs:
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
         run: |
           set -euo pipefail
+          
+          # 1. Update the values file
           VALUES_FILE="values/backend/${SUFFIX}.yaml"
           yq -i '
             .backend.image.repository = strenv(IMAGE_REPO) |
             .backend.image.tag        = strenv(IMAGE_TAG)
           ' "${VALUES_FILE}"
+          
+          # 2. Lint the umbrella chart with environment-specific values
+          echo "Linting Helm chart..."
+          helm dependency update charts/newsapp
+          helm lint charts/newsapp \
+            --values "values/backend/${SUFFIX}.yaml" \
+            --values "values/frontend/${SUFFIX}.yaml"
+          
+          # 3. Commit and push the changes
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${VALUES_FILE}"
