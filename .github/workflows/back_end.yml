@@ -29,6 +29,9 @@ on:
 permissions:
   contents: read
   packages: write
+  concurrency:
+    group: cicd-${{ github.workflow }}-manifests
+    cancel-in-progress: false
 
 env:
   MANIFEST_APP_DEFAULT: newsapp-backend
@@ -206,24 +209,28 @@ jobs:
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
         run: |
           set -euo pipefail
-          
-          # 1. Update the values file
+
           VALUES_FILE="values/backend/${SUFFIX}.yaml"
+          test -f "${VALUES_FILE}" || { echo "::error::Missing ${VALUES_FILE} in manifests repo"; exit 1; }
+
+          # 1) Update values
           yq -i '
             .backend.image.repository = strenv(IMAGE_REPO) |
             .backend.image.tag        = strenv(IMAGE_TAG)
           ' "${VALUES_FILE}"
-          
-          # 2. Lint the umbrella chart with environment-specific values
+
+          # 2) Lint
           echo "Linting Helm chart..."
           helm dependency update charts/newsapp
           helm lint charts/newsapp \
             --values "values/backend/${SUFFIX}.yaml" \
             --values "values/frontend/${SUFFIX}.yaml"
-          
-          # 3. Commit and push the changes
+
+          # 3) Safe commit & push (rebase to avoid races)
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin "${BRANCH}"
+          git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
           git add "${VALUES_FILE}"
           git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
