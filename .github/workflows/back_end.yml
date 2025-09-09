@@ -29,9 +29,9 @@ on:
 permissions:
   contents: read
   packages: write
-  concurrency:
-    group: cicd-${{ github.workflow }}-manifests
-    cancel-in-progress: false
+concurrency:
+  group: cicd-${{ github.workflow }}-manifests
+  cancel-in-progress: false
 
 env:
   MANIFEST_APP_DEFAULT: newsapp-backend
