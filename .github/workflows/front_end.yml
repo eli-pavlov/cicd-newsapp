@@ -46,6 +46,18 @@ jobs:
       - name: Checkout (CI/CD repo)
         uses: actions/checkout@v4
 
+      - name: Guard required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || \
+             [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ] || \
+             [ -z "${{ secrets.MANIFESTS_REPO }}" ] || \
+             [ -z "${{ secrets.GH_TOKEN }}" ]; then
+            echo "::error::Missing one or more required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO, GH_TOKEN"
+            exit 1
+          fi
+
       - name: Resolve context
         id: ctx
         shell: bash
@@ -86,13 +98,13 @@ jobs:
       - name: Compute image tags
         id: compute-tags
         shell: bash
-        working-directory: src
         run: |
           set -euo pipefail
-          COMMIT=$(git rev-parse HEAD)
+          COMMIT=$(git -C src rev-parse HEAD)
           SHORT=${COMMIT:0:7}
-          BRANCH=$(git rev-parse --abbrev-ref HEAD || true)
-          if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+          REF="${{ steps.ctx.outputs.src_ref }}"
+          BASE="${REF##*/}"
+          if [[ "$BASE" == "main" || "$BASE" == "master" ]]; then
             TAG="latest-${SHORT}"
             IS_LATEST="true"
           else
@@ -103,7 +115,7 @@ jobs:
             echo "commit=${COMMIT}"
             echo "tag=${TAG}"
             echo "is_latest=${IS_LATEST}"
-            echo "branch=${BRANCH}"
+            echo "branch=${BASE}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Resolve deploy environment
@@ -144,7 +156,6 @@ jobs:
           LATEST: ${{ steps.compute-tags.outputs.is_latest }}
         run: |
           set -euo pipefail
-          # Build the tags directly into the heredoc for clarity and robustness.
           {
             echo "tags<<EOF"
             echo "${IMAGE}:${TAG}"
@@ -216,4 +227,3 @@ jobs:
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
           git push origin "${BRANCH}"
-

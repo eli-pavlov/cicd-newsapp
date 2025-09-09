@@ -35,7 +35,9 @@ RUN set -eux; \
 
 # ---- serve stage ----
 FROM nginx:1.27-alpine
-# The nginx:alpine image already has a non-root user 'nginx' (uid/gid 101)
+
+# Needed for envsubst used by entrypoint.sh
+RUN apk add --no-cache gettext
 
 # Copy static assets
 COPY --from=build /static /usr/share/nginx/html
@@ -43,17 +45,14 @@ COPY --from=build /static /usr/share/nginx/html
 # Copy Nginx config template and entrypoint
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Nginx needs to write to these directories at runtime.
-# We change their ownership to the 'nginx' user.
-RUN chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d \
+RUN chmod +x /entrypoint.sh \
+    && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d \
     && touch /var/run/nginx.pid && chown -R nginx:nginx /var/run/nginx.pid
 
 # Switch to the non-root user
 USER nginx
 
-# Expose the new port
+# Expose the app port
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
