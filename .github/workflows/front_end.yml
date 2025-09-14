@@ -31,7 +31,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: cicd-${{ github.workflow }}-manifests
+  group: cicd-frontend-manifests
   cancel-in-progress: false
 
 env:
@@ -240,15 +240,15 @@ jobs:
         run: |
           set -euo pipefail
           test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
           if [ -z "$BACKEND_NAME" ] || [ -z "$BACKEND_PORT" ]; then
             echo "::error::Failed to extract backend service details from ${BACKEND_FILE}"
             exit 1
           fi
           echo "Validated backend service: ${BACKEND_NAME}:${BACKEND_PORT}"
 
-      - name: Update manifests and lint Helm chart
+      - name: Update frontend manifest values and lint Helm chart
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
@@ -261,76 +261,64 @@ jobs:
 
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
-          test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
+
           test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
+          test -f "${BACKEND_FILE}"  || echo "::warning::Missing ${BACKEND_FILE} (backend values might not exist for this env)"
 
-          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
-          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
-
-          # Update values (in-place) so manifests contain the new image/tag
+          # Update frontend image (top-level image keys) and Vite build vars (env.plain)
           yq -i '
-            .frontend.image.repository = strenv(IMAGE_REPO) |
-            .frontend.image.tag        = strenv(IMAGE_TAG)  |
-            .frontend.env.plain.VITE_SERVER_URL = "/api" |
-            .frontend.env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
-            .frontend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
+            .image.repository = strenv(IMAGE_REPO) |
+            .image.tag        = strenv(IMAGE_TAG)  |
+            .env.plain.VITE_SERVER_URL = "/api" |
+            .env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5"
           ' "${FRONTEND_FILE}"
 
-          # Ensure the umbrella chart has a charts/ directory
+          # For linting & packaging: ensure the umbrella chart has a charts/ directory
           mkdir -p charts/newsapp/charts
-
-          # Cleanup any old packaged charts to avoid stale contents
           rm -f charts/newsapp/charts/*.tgz || true
 
-          # Package local subcharts (if present) into charts/newsapp/charts
-          for sub in charts/app charts/postgres charts/backend charts/frontend; do
+          for sub in charts/frontend charts/backend charts/postgres; do
             if [ -d "$sub" ]; then
               echo "Packaging $sub into charts/newsapp/charts"
               helm package "$sub" -d charts/newsapp/charts
             fi
           done
 
-          # Remove Chart.lock to avoid attempting to use a cached remote repo index
           if [ -f charts/newsapp/Chart.lock ]; then
             echo "Removing charts/newsapp/Chart.lock to avoid remote repo lookups"
             rm -f charts/newsapp/Chart.lock
           fi
 
-          # Make Helm use an empty repository config/cache so it won't try to update any preconfigured remote repos
           export HELM_REPOSITORY_CONFIG="$(mktemp -d)"
           export HELM_REPOSITORY_CACHE="$(mktemp -d)"
 
-          # Build dependencies for the umbrella chart from local packaged charts (but don't fail the job if it can't reach external repos)
           helm dependency build charts/newsapp || {
             echo "::warning::helm dependency build failed — continuing because local packaged charts exist (check dependencies)"
           }
 
-          # Create sanitized temporary copies of values for linting (strip pathIngress which the chart schema rejects)
           TMP_BACKEND="$(mktemp)"
           TMP_FRONTEND="$(mktemp)"
-          cp "${BACKEND_FILE}" "$TMP_BACKEND"
+          if [ -f "${BACKEND_FILE}" ]; then cp "${BACKEND_FILE}" "$TMP_BACKEND"; fi
           cp "${FRONTEND_FILE}" "$TMP_FRONTEND"
-          # Remove pathIngress if present at root or under frontend/backend objects
-          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_BACKEND" || true
+          if [ -f "${TMP_BACKEND}" ]; then yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_BACKEND" || true; fi
           yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_FRONTEND" || true
 
-          # Lint the umbrella chart using the sanitized temp values files
           echo "Linting Helm chart..."
-          helm lint charts/newsapp \
-            --values "$TMP_BACKEND" \
-            --values "$TMP_FRONTEND"
+          if [ -f "${TMP_BACKEND}" ]; then
+            helm lint charts/newsapp --values "$TMP_BACKEND" --values "$TMP_FRONTEND"
+          else
+            helm lint charts/newsapp --values "$TMP_FRONTEND"
+          fi
 
-          # cleanup temp files
-          rm -f "$TMP_BACKEND" "$TMP_FRONTEND"
+          rm -f "$TMP_BACKEND" "$TMP_FRONTEND" || true
 
-          # Safe commit & push (rebase to avoid races)
+          # Safe commit & push
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
+
           git add "${FRONTEND_FILE}"
-          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
+          git commit -m "ci(manifests): update frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (built ${IMAGE_TAG})" || echo "No changes to commit"
           git push origin "${BRANCH}"
