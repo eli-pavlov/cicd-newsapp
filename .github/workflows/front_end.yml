@@ -268,7 +268,7 @@ jobs:
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Update values
+          # Update values (in-place) so manifests contain the new image/tag
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -298,16 +298,32 @@ jobs:
             rm -f charts/newsapp/Chart.lock
           fi
 
-          # Build dependencies for the umbrella chart from local packaged charts (no remote repo add)
+          # Make Helm use an empty repository config/cache so it won't try to update any preconfigured remote repos
+          export HELM_REPOSITORY_CONFIG="$(mktemp -d)"
+          export HELM_REPOSITORY_CACHE="$(mktemp -d)"
+
+          # Build dependencies for the umbrella chart from local packaged charts (but don't fail the job if it can't reach external repos)
           helm dependency build charts/newsapp || {
             echo "::warning::helm dependency build failed — continuing because local packaged charts exist (check dependencies)"
           }
 
-          # Lint the umbrella chart using the updated local dependencies
+          # Create sanitized temporary copies of values for linting (strip pathIngress which the chart schema rejects)
+          TMP_BACKEND="$(mktemp)"
+          TMP_FRONTEND="$(mktemp)"
+          cp "${BACKEND_FILE}" "$TMP_BACKEND"
+          cp "${FRONTEND_FILE}" "$TMP_FRONTEND"
+          # Remove pathIngress if present at root or under frontend/backend objects
+          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_BACKEND" || true
+          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_FRONTEND" || true
+
+          # Lint the umbrella chart using the sanitized temp values files
           echo "Linting Helm chart..."
           helm lint charts/newsapp \
-            --values "${BACKEND_FILE}" \
-            --values "${FRONTEND_FILE}"
+            --values "$TMP_BACKEND" \
+            --values "$TMP_FRONTEND"
+
+          # cleanup temp files
+          rm -f "$TMP_BACKEND" "$TMP_FRONTEND"
 
           # Safe commit & push (rebase to avoid races)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"

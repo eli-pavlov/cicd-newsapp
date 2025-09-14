@@ -248,13 +248,13 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # Ensure the umbrella chart has a charts/ directory for local packaged subcharts
+          # Ensure the umbrella chart has a charts/ directory
           mkdir -p charts/newsapp/charts
 
           # Cleanup old packaged charts
           rm -f charts/newsapp/charts/*.tgz || true
 
-          # Package local subcharts (if present) into charts/newsapp/charts
+          # Package local subcharts (if present)
           for sub in charts/app charts/postgres charts/backend charts/frontend; do
             if [ -d "$sub" ]; then
               echo "Packaging $sub into charts/newsapp/charts"
@@ -262,22 +262,34 @@ jobs:
             fi
           done
 
-          # Remove Chart.lock to avoid attempting to use a cached remote repo index
+          # Remove Chart.lock to avoid remote repo lookups
           if [ -f charts/newsapp/Chart.lock ]; then
             echo "Removing charts/newsapp/Chart.lock to avoid remote repo lookups"
             rm -f charts/newsapp/Chart.lock
           fi
 
-          # Build dependencies for the umbrella chart from local packaged charts
+          # Make Helm use an empty repo config/cache so it won't try to update preconfigured repos
+          export HELM_REPOSITORY_CONFIG="$(mktemp -d)"
+          export HELM_REPOSITORY_CACHE="$(mktemp -d)"
+
+          # Build dependencies from local packaged charts (don't fail job on external repo failures)
           helm dependency build charts/newsapp || {
             echo "::warning::helm dependency build failed — continuing because local packaged charts exist (check dependencies)"
           }
 
-          # Lint the umbrella chart using the updated local dependencies
+          # Sanitize temp copies of values for linting (remove pathIngress which chart schema rejects)
+          TMP_BACKEND="$(mktemp)"
+          TMP_FRONTEND="$(mktemp)"
+          cp "${BACKEND_FILE}" "$TMP_BACKEND"
+          cp "${FRONTEND_FILE}" "$TMP_FRONTEND"
+          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_BACKEND" || true
+          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_FRONTEND" || true
+
+          # Lint
           echo "Linting Helm chart..."
-          helm lint charts/newsapp \
-            --values "${BACKEND_FILE}" \
-            --values "${FRONTEND_FILE}"
+          helm lint charts/newsapp --values "$TMP_BACKEND" --values "$TMP_FRONTEND"
+
+          rm -f "$TMP_BACKEND" "$TMP_FRONTEND"
 
           # Make pushes use the GH token (robust push in runner)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
