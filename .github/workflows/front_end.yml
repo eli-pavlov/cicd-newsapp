@@ -47,6 +47,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'frontend')
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout (CI/CD repo)
         uses: actions/checkout@v4
@@ -94,11 +95,37 @@ jobs:
           path: src
 
       - name: Prepare build context
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p src/nginx
-          cp -r frontend/nginx/* src/nginx/
-          cp frontend/Dockerfile src/Dockerfile
-          if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
+
+          # nginx files: prefer the checked-out source (src/nginx); otherwise fallback to CI repo frontend/nginx
+          if [ -d "src/nginx" ] && [ "$(ls -A src/nginx || true)" ]; then
+            echo "Using nginx files already present in src/nginx (from checked-out app repo)."
+          elif [ -d "frontend/nginx" ]; then
+            echo "Using nginx files from CI repo: frontend/nginx -> src/nginx"
+            cp -r frontend/nginx/* src/nginx/
+          else
+            echo "No nginx directory found (neither src/nginx nor frontend/nginx)."
+          fi
+
+          # Dockerfile: prefer src/Dockerfile (from checked-out app repo), otherwise copy from CI repo frontend/Dockerfile
+          if [ -f src/Dockerfile ]; then
+            echo "Dockerfile already present in src/"
+          elif [ -f frontend/Dockerfile ]; then
+            cp frontend/Dockerfile src/Dockerfile
+          else
+            echo "::error::No Dockerfile found (expected src/Dockerfile or frontend/Dockerfile)"
+            exit 1
+          fi
+
+          # Copy optional .dockerignore if present (prefer src/.dockerignore)
+          if [ -f src/.dockerignore ]; then
+            echo ".dockerignore found in src/"
+          elif [ -f frontend/.dockerignore ]; then
+            cp frontend/.dockerignore src/.dockerignore
+          fi
 
       - name: Compute image tags
         id: compute-tags
@@ -251,10 +278,10 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # Ensure the umbrella chart has a charts/ directory
+          # Ensure the umbrella chart has a charts/ directory for local packaged subcharts
           mkdir -p charts/newsapp/charts
 
-          # Package local subcharts (if present) into the umbrella chart charts/ folder
+          # Package local subcharts (if present) into charts/newsapp/charts
           for sub in charts/app charts/postgres charts/backend charts/frontend; do
             if [ -d "$sub" ]; then
               echo "Packaging $sub into charts/newsapp/charts"
@@ -271,11 +298,13 @@ jobs:
             --values "${BACKEND_FILE}" \
             --values "${FRONTEND_FILE}"
 
-          # Safe commit & push (rebase to avoid races)
+          # Make pushes use the GH token (robust push in runner)
+          git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
+
           git add "${FRONTEND_FILE}"
-          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
+          git commit -m "ci(manifests): frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
