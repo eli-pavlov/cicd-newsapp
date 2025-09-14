@@ -253,17 +253,17 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: "Owner/repo of the frontend source repository"
+        description: "Owner/repo of the frontend source repository (e.g., ghGill/newsAppFront)"
         required: true
         default: "ghGill/newsAppFront"
         type: string
       source_ref:
-        description: "Ref to build (HEAD, branch, tag, or commit SHA)"
+        description: "Git ref to build (branch, tag, or commit SHA, e.g., main, v1.0.0, abc1234)"
         required: true
         default: "main"
         type: string
       app_name:
-        description: "App name used in image name"
+        description: "Application name used in the Docker image (e.g., newsapp-frontend)"
         required: true
         default: "newsapp-frontend"
         type: string
@@ -280,6 +280,7 @@ env:
   MANIFEST_APP_DEFAULT: newsapp-frontend
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
   MANIFESTS_BRANCH: main
+  YQ_VERSION: v4.44.3
 
 jobs:
   docker:
@@ -438,15 +439,29 @@ jobs:
       - name: Install yq
         run: |
           set -e
-          YQ_VERSION=v4.44.1
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
-          
+
       - name: Install Helm
         run: |
           curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
           chmod 700 get_helm.sh
           ./get_helm.sh
+
+      - name: Validate Backend Service
+        working-directory: manifests
+        env:
+          BACKEND_FILE: values/backend/${{ steps.deploy.outputs.values_suffix }}.yaml
+        run: |
+          set -euo pipefail
+          test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
+          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
+          if [ -z "$BACKEND_NAME" ] || [ -z "$BACKEND_PORT" ]; then
+            echo "::error::Failed to extract backend service details from ${BACKEND_FILE}"
+            exit 1
+          fi
+          echo "Validated backend service: ${BACKEND_NAME}:${BACKEND_PORT}"
 
       - name: Update manifests and lint Helm chart
         working-directory: manifests
@@ -468,7 +483,7 @@ jobs:
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # 1) Update values
+          # Update values
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -478,14 +493,14 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # 2) Lint
+          # Lint
           echo "Linting Helm chart..."
           helm dependency update charts/newsapp
           helm lint charts/newsapp \
             --values "${BACKEND_FILE}" \
             --values "${FRONTEND_FILE}"
 
-          # 3) Safe commit & push (rebase to avoid races)
+          # Safe commit & push (rebase to avoid races)
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
@@ -541,9 +556,6 @@ USER app
 EXPOSE 8080
 # Adjust if your main file differs (app.js/server.js)
 CMD ["node", "./app.js"]
-
-// combined.txt
-
 
 // frontend/.dockerignore
 node_modules
