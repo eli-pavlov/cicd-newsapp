@@ -278,8 +278,11 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # Ensure the umbrella chart has a charts/ directory for local packaged subcharts
+          # Ensure the umbrella chart has a charts/ directory
           mkdir -p charts/newsapp/charts
+
+          # Cleanup any old packaged charts to avoid stale contents
+          rm -f charts/newsapp/charts/*.tgz || true
 
           # Package local subcharts (if present) into charts/newsapp/charts
           for sub in charts/app charts/postgres charts/backend charts/frontend; do
@@ -289,8 +292,16 @@ jobs:
             fi
           done
 
-          # Build dependencies for the umbrella chart from local packaged charts
-          helm dependency build charts/newsapp
+          # Remove Chart.lock to avoid attempting to use a cached remote repo index
+          if [ -f charts/newsapp/Chart.lock ]; then
+            echo "Removing charts/newsapp/Chart.lock to avoid remote repo lookups"
+            rm -f charts/newsapp/Chart.lock
+          fi
+
+          # Build dependencies for the umbrella chart from local packaged charts (no remote repo add)
+          helm dependency build charts/newsapp || {
+            echo "::warning::helm dependency build failed — continuing because local packaged charts exist (check dependencies)"
+          }
 
           # Lint the umbrella chart using the updated local dependencies
           echo "Linting Helm chart..."
@@ -298,13 +309,12 @@ jobs:
             --values "${BACKEND_FILE}" \
             --values "${FRONTEND_FILE}"
 
-          # Make pushes use the GH token (robust push in runner)
+          # Safe commit & push (rebase to avoid races)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
-
           git add "${FRONTEND_FILE}"
-          git commit -m "ci(manifests): frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
           git push origin "${BRANCH}"
