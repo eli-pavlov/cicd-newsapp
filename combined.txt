@@ -225,6 +225,8 @@ jobs:
 
           # 2) Lint
           echo "Linting Helm chart..."
+          helm repo add manifests "https://eli-pavlov.github.io/newsapp-manifests" || true
+          helm repo update
           helm dependency update charts/newsapp
           helm lint charts/newsapp \
             --values "values/backend/${SUFFIX}.yaml" \
@@ -495,6 +497,8 @@ jobs:
 
           # Lint
           echo "Linting Helm chart..."
+          helm repo add manifests "https://eli-pavlov.github.io/newsapp-manifests" || true
+          helm repo update
           helm dependency update charts/newsapp
           helm lint charts/newsapp \
             --values "${BACKEND_FILE}" \

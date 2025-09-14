@@ -200,39 +200,61 @@ jobs:
           chmod 700 get_helm.sh
           ./get_helm.sh
 
-      - name: Bump backend image tag and lint manifests
+      - name: Update manifests and lint Helm chart
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
+          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
         run: |
           set -euo pipefail
 
-          VALUES_FILE="values/backend/${SUFFIX}.yaml"
-          test -f "${VALUES_FILE}" || { echo "::error::Missing ${VALUES_FILE} in manifests repo"; exit 1; }
+          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
+          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
+          test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
+          test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
 
-          # 1) Update values
+          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
+
+          # Update values
           yq -i '
-            .backend.image.repository = strenv(IMAGE_REPO) |
-            .backend.image.tag        = strenv(IMAGE_TAG)
-          ' "${VALUES_FILE}"
+            .frontend.image.repository = strenv(IMAGE_REPO) |
+            .frontend.image.tag        = strenv(IMAGE_TAG)  |
+            .frontend.env.plain.VITE_SERVER_URL = "/api" |
+            .frontend.env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
+            .frontend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
+            .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
+          ' "${FRONTEND_FILE}"
 
-          # 2) Lint
+          # Ensure the umbrella chart has a charts/ directory
+          mkdir -p charts/newsapp/charts
+
+          # Package local subcharts (if present) into the umbrella chart charts/ folder
+          for sub in charts/app charts/postgres charts/backend charts/frontend; do
+            if [ -d "$sub" ]; then
+              echo "Packaging $sub into charts/newsapp/charts"
+              helm package "$sub" -d charts/newsapp/charts
+            fi
+          done
+
+          # Build dependencies for the umbrella chart from local packaged charts
+          helm dependency build charts/newsapp
+
+          # Lint the umbrella chart using the updated local dependencies
           echo "Linting Helm chart..."
-          helm repo add manifests "https://eli-pavlov.github.io/newsapp-manifests" || true
-          helm repo update
-          helm dependency update charts/newsapp
           helm lint charts/newsapp \
-            --values "values/backend/${SUFFIX}.yaml" \
-            --values "values/frontend/${SUFFIX}.yaml"
+            --values "${BACKEND_FILE}" \
+            --values "${FRONTEND_FILE}"
 
-          # 3) Safe commit & push (rebase to avoid races)
+          # Safe commit & push (rebase to avoid races)
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
-          git add "${VALUES_FILE}"
-          git commit -m "ci: backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
+          git add "${FRONTEND_FILE}"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
           git push origin "${BRANCH}"

@@ -251,11 +251,22 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # Lint
+          # Ensure the umbrella chart has a charts/ directory
+          mkdir -p charts/newsapp/charts
+
+          # Package local subcharts (if present) into the umbrella chart charts/ folder
+          for sub in charts/app charts/postgres charts/backend charts/frontend; do
+            if [ -d "$sub" ]; then
+              echo "Packaging $sub into charts/newsapp/charts"
+              helm package "$sub" -d charts/newsapp/charts
+            fi
+          done
+
+          # Build dependencies for the umbrella chart from local packaged charts
+          helm dependency build charts/newsapp
+
+          # Lint the umbrella chart using the updated local dependencies
           echo "Linting Helm chart..."
-          helm repo add manifests "https://eli-pavlov.github.io/newsapp-manifests" || true
-          helm repo update
-          helm dependency update charts/newsapp
           helm lint charts/newsapp \
             --values "${BACKEND_FILE}" \
             --values "${FRONTEND_FILE}"
