@@ -98,17 +98,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Dockerfile: prefer src/Dockerfile (from checked-out backend repo), otherwise copy from CI repo backend/Dockerfile
           if [ -f src/Dockerfile ]; then
-            echo "Dockerfile already present in src/"
+            echo "Dockerfile present in src/"
           elif [ -f backend/Dockerfile ]; then
             cp backend/Dockerfile src/Dockerfile
           else
             echo "::error::No Dockerfile found (expected src/Dockerfile or backend/Dockerfile)"
             exit 1
           fi
-
-          # Copy optional .dockerignore if present (prefer src/.dockerignore)
           if [ -f src/.dockerignore ]; then
             echo ".dockerignore found in src/"
           elif [ -f backend/.dockerignore ]; then
@@ -222,8 +219,6 @@ jobs:
           SLEEP_SECS=2
 
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-
-          # Start container without --rm so we can inspect if it exits
           docker run -d --name "${CONTAINER_NAME}" -p "${HOST_PORT}:${CONTAINER_PORT}" "${IMAGE_FULL}"
 
           i=0
@@ -261,7 +256,6 @@ jobs:
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
           exit 1
 
-
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -298,13 +292,10 @@ jobs:
           test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
           test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
 
-          # extract basic backend info (keeps previous behavior / compatibility)
           BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Update frontend values to reference the new backend image + runtime variables.
-          # (This mirrors previous behavior where backend CI updates FRONTEND values to point to the latest backend)
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -314,31 +305,24 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # OPTIONAL: if you want backend pipeline to also update its own values file comment/uncomment below:
-          # yq -i '.backend.image.repository = strenv(IMAGE_REPO) | .backend.image.tag = strenv(IMAGE_TAG)' "${BACKEND_FILE}"
-
-          # Lint both charts individually using their env-specific values files to catch chart/schema/template problems
           echo "Linting backend chart..."
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
           echo "Linting frontend chart..."
           helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
 
-          # Render templates to ensure no template errors (extra safety)
           echo "Rendering backend template..."
           helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
 
           echo "Rendering frontend template..."
           helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
 
-          # Safe commit & push (rebase to avoid races)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
 
-          # Commit only the frontend values file (since backend pipeline drives frontend updates)
           git add "${FRONTEND_FILE}"
           git commit -m "ci(manifests): update frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (triggered by backend build)" || echo "No changes to commit"
           git push origin "${BRANCH}"

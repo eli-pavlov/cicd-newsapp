@@ -99,28 +99,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p src/nginx
-
-          # nginx files: prefer the checked-out source (src/nginx); otherwise fallback to CI repo frontend/nginx
           if [ -d "src/nginx" ] && [ "$(ls -A src/nginx || true)" ]; then
-            echo "Using nginx files already present in src/nginx (from checked-out app repo)."
+            echo "Using nginx files present in src/nginx."
           elif [ -d "frontend/nginx" ]; then
-            echo "Using nginx files from CI repo: frontend/nginx -> src/nginx"
             cp -r frontend/nginx/* src/nginx/
           else
             echo "No nginx directory found (neither src/nginx nor frontend/nginx)."
           fi
-
-          # Dockerfile: prefer src/Dockerfile (from checked-out app repo), otherwise copy from CI repo frontend/Dockerfile
           if [ -f src/Dockerfile ]; then
-            echo "Dockerfile already present in src/"
+            echo "Dockerfile present in src/"
           elif [ -f frontend/Dockerfile ]; then
             cp frontend/Dockerfile src/Dockerfile
           else
             echo "::error::No Dockerfile found (expected src/Dockerfile or frontend/Dockerfile)"
             exit 1
           fi
-
-          # Copy optional .dockerignore if present (prefer src/.dockerignore)
           if [ -f src/.dockerignore ]; then
             echo ".dockerignore found in src/"
           elif [ -f frontend/.dockerignore ]; then
@@ -236,16 +229,17 @@ jobs:
           MAX_RETRIES=30
           SLEEP_SECS=2
 
-          # Ensure no old container
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
-          # Start container (no --rm so we can inspect if it exits)
-          docker run -d --name "${CONTAINER_NAME}" -p "${HOST_PORT}:${CONTAINER_PORT}" "${IMAGE_FULL}"
+          # Start container with explicit backend envs (prevents empty upstream in nginx)
+          docker run -d --name "${CONTAINER_NAME}" \
+            -p "${HOST_PORT}:${CONTAINER_PORT}" \
+            -e BACKEND_SERVICE_HOST="backend.default.svc.cluster.local" \
+            -e BACKEND_SERVICE_PORT="8080" \
+            "${IMAGE_FULL}"
 
-          # Wait loop: check if container is alive AND respond to HTTP
           i=0
           while [ $i -lt $MAX_RETRIES ]; do
-            # If container exited, dump useful diagnostics and fail fast
             if [ "$(docker inspect -f '{{.State.Running}}' ${CONTAINER_NAME} 2>/dev/null || echo false)" != "true" ]; then
               echo "::error::Container ${CONTAINER_NAME} is not running (inspect follows)"
               docker ps -a --filter "name=${CONTAINER_NAME}"
@@ -278,7 +272,6 @@ jobs:
           docker logs --tail 500 "${CONTAINER_NAME}" || true
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
           exit 1
-
 
       - name: Checkout manifests repo
         uses: actions/checkout@v4
@@ -335,7 +328,6 @@ jobs:
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Update frontend values to reference the newly-built frontend image and ensure runtime proxy variables are correct
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -345,24 +337,18 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # OPTIONAL: if you'd like the frontend pipeline to also update backend manifest references, uncomment:
-          # yq -i '.backend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) | .backend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)' "${BACKEND_FILE}"
-
-          # Lint charts individually
           echo "Linting backend chart..."
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
           echo "Linting frontend chart..."
           helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
 
-          # Render templates to ensure no template errors
           echo "Rendering backend template..."
           helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
 
           echo "Rendering frontend template..."
           helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
 
-          # Safe commit & push (rebase to avoid races)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
