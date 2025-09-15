@@ -194,10 +194,53 @@ jobs:
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Run backend container and test HTTP response
+        shell: bash
+        env:
+          IMAGE: ${{ steps.ctx.outputs.image }}
+          TAG:   ${{ steps.compute-tags.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_FULL="${IMAGE}:${TAG}"
+          CONTAINER_NAME="ci-test-backend"
+          HOST_PORT=8081          # host port to map container 8080 -> 8081
+          CONTAINER_PORT=8080
+          URLPATH="/"             # change to /health if your app exposes health endpoint
+          MAX_RETRIES=30
+          SLEEP_SECS=2
+
+          # Cleanup any previous run
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+          # Start container with default entrypoint/CMD
+          docker run --rm -d --name "${CONTAINER_NAME}" -p "${HOST_PORT}:${CONTAINER_PORT}" "${IMAGE_FULL}"
+
+          # Poll for an HTTP response (accept 2xx-4xx)
+          i=0
+          while [ $i -lt $MAX_RETRIES ]; do
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HOST_PORT}${URLPATH}" || true)
+            if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
+              echo "Success: backend responded with HTTP ${http_code}"
+              docker logs --tail 100 "${CONTAINER_NAME}" || true
+              docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+              exit 0
+            fi
+            echo "Waiting for backend (attempt $((i+1))/${MAX_RETRIES})..."
+            sleep $SLEEP_SECS
+            i=$((i+1))
+          done
+
+          echo "::error::Backend container did not respond in time. Dumping logs..."
+          docker logs "${CONTAINER_NAME}" || true
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          exit 1
 
       - name: Checkout manifests repo
         uses: actions/checkout@v4

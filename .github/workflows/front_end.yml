@@ -206,6 +206,7 @@ jobs:
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          load: true
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
@@ -213,6 +214,48 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Run frontend container and test HTTP root (/)
+        shell: bash
+        env:
+          IMAGE: ${{ steps.ctx.outputs.image }}
+          TAG:   ${{ steps.compute-tags.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_FULL="${IMAGE}:${TAG}"
+          CONTAINER_NAME="ci-test-frontend"
+          HOST_PORT=8082          # host port to map container 8080 -> 8082
+          CONTAINER_PORT=8080
+          URLPATH="/"             # test root document
+          MAX_RETRIES=30
+          SLEEP_SECS=2
+
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+          # Start container using default ENTRYPOINT/CMD (ensures entrypoint is exercised)
+          docker run --rm -d --name "${CONTAINER_NAME}" -p "${HOST_PORT}:${CONTAINER_PORT}" "${IMAGE_FULL}"
+
+          i=0
+          while [ $i -lt $MAX_RETRIES ]; do
+            # We expect a 200 for an SPA index.html; accept 2xx-4xx as "responded"
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HOST_PORT}${URLPATH}" || true)
+            if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
+              echo "Success: frontend responded with HTTP ${http_code}"
+              docker logs --tail 100 "${CONTAINER_NAME}" || true
+              docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+              exit 0
+            fi
+            echo "Waiting for frontend (attempt $((i+1))/${MAX_RETRIES})..."
+            sleep $SLEEP_SECS
+            i=$((i+1))
+          done
+
+          echo "::error::Frontend container did not respond in time. Dumping logs..."
+          docker logs "${CONTAINER_NAME}" || true
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          exit 1
+
 
       - name: Checkout manifests repo
         uses: actions/checkout@v4

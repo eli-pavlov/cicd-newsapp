@@ -230,6 +230,7 @@ jobs:
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
           K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -238,11 +239,13 @@ jobs:
           test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
           test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
 
+          # extract basic backend info (keeps previous behavior / compatibility)
           BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Update values (frontend values updated by backend pipeline so manifests always point to the latest backend image)
+          # Update frontend values to reference the new backend image + runtime variables.
+          # (This mirrors previous behavior where backend CI updates FRONTEND values to point to the latest backend)
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -252,56 +255,31 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # Ensure the umbrella chart has a charts/ directory
-          mkdir -p charts/newsapp/charts
+          # OPTIONAL: if you want backend pipeline to also update its own values file comment/uncomment below:
+          # yq -i '.backend.image.repository = strenv(IMAGE_REPO) | .backend.image.tag = strenv(IMAGE_TAG)' "${BACKEND_FILE}"
 
-          # Cleanup old packaged charts
-          rm -f charts/newsapp/charts/*.tgz || true
+          # Lint both charts individually using their env-specific values files to catch chart/schema/template problems
+          echo "Linting backend chart..."
+          helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
-          # Package local subcharts (if present)
-          for sub in charts/app charts/postgres charts/backend charts/frontend; do
-            if [ -d "$sub" ]; then
-              echo "Packaging $sub into charts/newsapp/charts"
-              helm package "$sub" -d charts/newsapp/charts
-            fi
-          done
+          echo "Linting frontend chart..."
+          helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
 
-          # Remove Chart.lock to avoid remote repo lookups
-          if [ -f charts/newsapp/Chart.lock ]; then
-            echo "Removing charts/newsapp/Chart.lock to avoid remote repo lookups"
-            rm -f charts/newsapp/Chart.lock
-          fi
+          # Render templates to ensure no template errors (extra safety)
+          echo "Rendering backend template..."
+          helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
 
-          # Make Helm use an empty repo config/cache so it won't try to update preconfigured repos
-          export HELM_REPOSITORY_CONFIG="$(mktemp -d)"
-          export HELM_REPOSITORY_CACHE="$(mktemp -d)"
+          echo "Rendering frontend template..."
+          helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
 
-          # Build dependencies from local packaged charts (don't fail job on external repo failures)
-          helm dependency build charts/newsapp || {
-            echo "::warning::helm dependency build failed — continuing because local packaged charts exist (check dependencies)"
-          }
-
-          # Sanitize temp copies of values for linting (remove pathIngress which chart schema rejects)
-          TMP_BACKEND="$(mktemp)"
-          TMP_FRONTEND="$(mktemp)"
-          cp "${BACKEND_FILE}" "$TMP_BACKEND"
-          cp "${FRONTEND_FILE}" "$TMP_FRONTEND"
-          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_BACKEND" || true
-          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_FRONTEND" || true
-
-          # Lint
-          echo "Linting Helm chart..."
-          helm lint charts/newsapp --values "$TMP_BACKEND" --values "$TMP_FRONTEND"
-
-          rm -f "$TMP_BACKEND" "$TMP_FRONTEND"
-
-          # Make pushes use the GH token (robust push in runner)
+          # Safe commit & push (rebase to avoid races)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
 
+          # Commit only the frontend values file (since backend pipeline drives frontend updates)
           git add "${FRONTEND_FILE}"
           git commit -m "ci(manifests): update frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (triggered by backend build)" || echo "No changes to commit"
           git push origin "${BRANCH}"
@@ -565,6 +543,7 @@ jobs:
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
           K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -577,7 +556,7 @@ jobs:
           BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # Update values (in-place) so manifests contain the new image/tag
+          # Update frontend values to reference the newly-built frontend image and ensure runtime proxy variables are correct
           yq -i '
             .frontend.image.repository = strenv(IMAGE_REPO) |
             .frontend.image.tag        = strenv(IMAGE_TAG)  |
@@ -587,52 +566,22 @@ jobs:
             .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
           ' "${FRONTEND_FILE}"
 
-          # Ensure the umbrella chart has a charts/ directory
-          mkdir -p charts/newsapp/charts
+          # OPTIONAL: if you'd like the frontend pipeline to also update backend manifest references, uncomment:
+          # yq -i '.backend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) | .backend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)' "${BACKEND_FILE}"
 
-          # Cleanup any old packaged charts to avoid stale contents
-          rm -f charts/newsapp/charts/*.tgz || true
+          # Lint charts individually
+          echo "Linting backend chart..."
+          helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
-          # Package local subcharts (if present) into charts/newsapp/charts
-          for sub in charts/app charts/postgres charts/backend charts/frontend; do
-            if [ -d "$sub" ]; then
-              echo "Packaging $sub into charts/newsapp/charts"
-              helm package "$sub" -d charts/newsapp/charts
-            fi
-          done
+          echo "Linting frontend chart..."
+          helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
 
-          # Remove Chart.lock to avoid attempting to use a cached remote repo index
-          if [ -f charts/newsapp/Chart.lock ]; then
-            echo "Removing charts/newsapp/Chart.lock to avoid remote repo lookups"
-            rm -f charts/newsapp/Chart.lock
-          fi
+          # Render templates to ensure no template errors
+          echo "Rendering backend template..."
+          helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
 
-          # Make Helm use an empty repository config/cache so it won't try to update any preconfigured remote repos
-          export HELM_REPOSITORY_CONFIG="$(mktemp -d)"
-          export HELM_REPOSITORY_CACHE="$(mktemp -d)"
-
-          # Build dependencies for the umbrella chart from local packaged charts (but don't fail the job if it can't reach external repos)
-          helm dependency build charts/newsapp || {
-            echo "::warning::helm dependency build failed — continuing because local packaged charts exist (check dependencies)"
-          }
-
-          # Create sanitized temporary copies of values for linting (strip pathIngress which the chart schema rejects)
-          TMP_BACKEND="$(mktemp)"
-          TMP_FRONTEND="$(mktemp)"
-          cp "${BACKEND_FILE}" "$TMP_BACKEND"
-          cp "${FRONTEND_FILE}" "$TMP_FRONTEND"
-          # Remove pathIngress if present at root or under frontend/backend objects
-          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_BACKEND" || true
-          yq -i 'del(.pathIngress) | del(.frontend.pathIngress) | del(.backend.pathIngress)' "$TMP_FRONTEND" || true
-
-          # Lint the umbrella chart using the sanitized temp values files
-          echo "Linting Helm chart..."
-          helm lint charts/newsapp \
-            --values "$TMP_BACKEND" \
-            --values "$TMP_FRONTEND"
-
-          # cleanup temp files
-          rm -f "$TMP_BACKEND" "$TMP_FRONTEND"
+          echo "Rendering frontend template..."
+          helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
 
           # Safe commit & push (rebase to avoid races)
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
@@ -640,6 +589,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
+
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
           git push origin "${BRANCH}"
