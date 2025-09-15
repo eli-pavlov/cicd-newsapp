@@ -195,7 +195,9 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
-
+            
+      # WIP - testing the built image locally
+      # Not ready yet - needs fixes
       # - name: Pull built backend image (for test)
       #   run: |
       #     set -euo pipefail
