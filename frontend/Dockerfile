@@ -16,7 +16,7 @@ ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
 COPY . .
 RUN npm run build
 
-# Normalize build output to a fixed path we control (/static)
+# Normalize build output to a fixed path
 # Handles projects that output to: dist, build, public/app, frontend/dist, backend/public/app, etc.
 RUN set -eux; \
     candidates="dist build public public/app frontend/dist backend/public/app"; \
