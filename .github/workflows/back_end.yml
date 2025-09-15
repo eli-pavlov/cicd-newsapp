@@ -198,6 +198,7 @@ jobs:
 
       - name: Pull built backend image (for test)
         run: |
+          set -euo pipefail
           IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
           echo "Pulling ${IMAGE}"
           docker pull "${IMAGE}"

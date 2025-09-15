@@ -209,15 +209,17 @@ jobs:
 
       - name: Pull built frontend image (for test)
         run: |
+          set -euo pipefail
           IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
           echo "Pulling ${IMAGE}"
           docker pull "${IMAGE}"
 
-      - name: Run frontend container and test HTTP root (/)
+      - name: Run frontend container and test HTTP root (uses mock backend)
         shell: bash
         env:
           IMAGE: ${{ steps.ctx.outputs.image }}
           TAG:   ${{ steps.compute-tags.outputs.tag }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
@@ -229,35 +231,55 @@ jobs:
           MAX_RETRIES=30
           SLEEP_SECS=2
 
+          # Create ephemeral network to let frontend resolve mock backend by container name
+          NET="ci-net-${GITHUB_RUN_ID}"
+          docker network create "${NET}" >/dev/null 2>&1 || true
+
+          # Start a tiny mock backend (python http server) on the network
+          MOCK_NAME="ci-backend-mock"
+          docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
+          docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 8080" >/dev/null
+
+          # Ensure no old frontend container
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
-          # Start container with explicit backend envs (prevents empty upstream in nginx)
+          # Start frontend container on same network; set BACKEND env to mock service name so nginx can resolve it
           docker run -d --name "${CONTAINER_NAME}" \
+            --network "${NET}" \
             -p "${HOST_PORT}:${CONTAINER_PORT}" \
-            -e BACKEND_SERVICE_HOST="backend.default.svc.cluster.local" \
+            -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
             -e BACKEND_SERVICE_PORT="8080" \
             "${IMAGE_FULL}"
 
+          # Poll frontend as before; if either container exits we dump diagnostics
           i=0
           while [ $i -lt $MAX_RETRIES ]; do
+            # If frontend exited early, show logs and fail
             if [ "$(docker inspect -f '{{.State.Running}}' ${CONTAINER_NAME} 2>/dev/null || echo false)" != "true" ]; then
               echo "::error::Container ${CONTAINER_NAME} is not running (inspect follows)"
               docker ps -a --filter "name=${CONTAINER_NAME}"
               docker inspect "${CONTAINER_NAME}" || true
-              echo "------ last logs (tail 200) ------"
+              echo "------ frontend last logs (tail 200) ------"
               docker logs --tail 200 "${CONTAINER_NAME}" || true
+              echo "------ mock backend last logs (tail 200) ------"
+              docker logs --tail 200 "${MOCK_NAME}" || true
               EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER_NAME}" || echo "unknown")
-              echo "::error::Container exit code: ${EXIT_CODE}"
+              echo "::error::Frontend exit code: ${EXIT_CODE}"
               docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+              docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
+              docker network rm "${NET}" >/dev/null 2>&1 || true
               exit 1
             fi
 
+            # Check that frontend responds on the mapped host port
             http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HOST_PORT}${URLPATH}" || true)
             if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
               echo "Success: frontend responded with HTTP ${http_code}"
-              echo "------ container logs (tail 200) ------"
+              echo "------ frontend logs (tail 200) ------"
               docker logs --tail 200 "${CONTAINER_NAME}" || true
               docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+              docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
+              docker network rm "${NET}" >/dev/null 2>&1 || true
               exit 0
             fi
 
@@ -270,7 +292,10 @@ jobs:
           docker ps -a --filter "name=${CONTAINER_NAME}"
           docker inspect "${CONTAINER_NAME}" || true
           docker logs --tail 500 "${CONTAINER_NAME}" || true
+          docker logs --tail 500 "${MOCK_NAME}" || true
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
+          docker network rm "${NET}" >/dev/null 2>&1 || true
           exit 1
 
       - name: Checkout manifests repo
