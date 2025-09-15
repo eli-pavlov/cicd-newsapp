@@ -195,7 +195,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
-            
+
       # WIP - testing the built image locally
       # Not ready yet - needs fixes
       # - name: Pull built backend image (for test)
@@ -284,48 +284,31 @@ jobs:
           IMAGE_REPO: ${{ steps.ctx.outputs.image }}
           IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
           SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
-          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
         shell: bash
         run: |
           set -euo pipefail
 
+          # 1. CORRECTED: Target the backend values file
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
-          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
-          test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-          test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
+          test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
 
-          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
-          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
-
-          yq -i '
-            .frontend.image.repository = strenv(IMAGE_REPO) |
-            .frontend.image.tag        = strenv(IMAGE_TAG)  |
-            .frontend.env.plain.VITE_SERVER_URL = "/api" |
-            .frontend.env.plain.VITE_NEWS_INTERVAL_IN_MIN = "5" |
-            .frontend.env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .frontend.env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
-          ' "${FRONTEND_FILE}"
+          # 2. CORRECTED: Update the correct keys in the backend values file
+          yq -i '.image.repository = strenv(IMAGE_REPO) | .image.tag = strenv(IMAGE_TAG)' "${BACKEND_FILE}"
 
           echo "Linting backend chart..."
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
-          echo "Linting frontend chart..."
-          helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
-
           echo "Rendering backend template..."
           helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
 
-          echo "Rendering frontend template..."
-          helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
-
+          # 3. CORRECTED: Git operations for the backend file
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
 
-          git add "${FRONTEND_FILE}"
-          git commit -m "ci(manifests): update frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG} (triggered by backend build)" || echo "No changes to commit"
+          git add "${BACKEND_FILE}"
+          git commit -m "ci(manifests): update backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
