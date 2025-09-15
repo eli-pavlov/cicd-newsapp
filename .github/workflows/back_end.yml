@@ -194,11 +194,16 @@ jobs:
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          load: true
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Pull built backend image (for test)
+        run: |
+          IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          echo "Pulling ${IMAGE}"
+          docker pull "${IMAGE}"
 
       - name: Run backend container and test HTTP response
         shell: bash

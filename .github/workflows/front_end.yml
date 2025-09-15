@@ -206,7 +206,6 @@ jobs:
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          load: true
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
@@ -214,6 +213,12 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Pull built frontend image (for test)
+        run: |
+          IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          echo "Pulling ${IMAGE}"
+          docker pull "${IMAGE}"
 
       - name: Run frontend container and test HTTP root (/)
         shell: bash
