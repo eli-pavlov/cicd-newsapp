@@ -196,20 +196,19 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ./src
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          no-cache: true                # force rebuild while debugging (remove/false for normal runs)
+          no-cache: true                # keep for debugging; remove/false for normal runs
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
             DEBUG_BUILD=true
-          tags: |
-            ${{ env.DOCKERHUB_USER }}/newsapp-frontend:${{ steps.set_tag.outputs.tag }}
-            ${{ env.DOCKERHUB_USER }}/newsapp-frontend:latest
+          tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
