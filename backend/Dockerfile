@@ -21,6 +21,6 @@ COPY --from=build /app ./
 RUN addgroup -S app && adduser -S app -G app
 USER app
 
-EXPOSE 8080
+EXPOSE 3000
 CMD ["node", "./app.js"]
 
