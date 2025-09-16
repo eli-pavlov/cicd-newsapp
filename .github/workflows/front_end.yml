@@ -25,7 +25,7 @@ on:
         required: true
         default: "newsapp-frontend"
         type: string
-      debug:                             # <<< ADDED: opt-in debug flag
+      debug:
         description: "Enable build + runtime debug (print index.html, collect artifacts)"
         required: false
         default: "false"
