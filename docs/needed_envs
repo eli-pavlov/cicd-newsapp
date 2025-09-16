@@ -1,3 +1,7 @@
+# --- App Source Repos ---
+https://github.com/ghGill/newsAppFront
+https://github.com/ghGill/newsAppbackend
+
 # --- Frontend build-time (Vite) ---
 VITE_SERVER_URL={{VITE_SERVER_URL}}                    # e.g. /api
 VITE_NEWS_INTERVAL_IN_MIN={{VITE_NEWS_INTERVAL_IN_MIN}}  # e.g. 5
