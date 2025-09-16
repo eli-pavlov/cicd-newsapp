@@ -2,10 +2,12 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
+ARG DEBUG_BUILD=false
+ENV DEBUG_BUILD=${DEBUG_BUILD}
+
 # Install deps (dev deps are needed to build)
 # copy lockfile if present for reproducible installs
 COPY package*.json ./
-# if you have package-lock.json or pnpm-lock.yaml this will pick it up from the glob
 RUN npm ci
 
 # Build-time config for Vite
@@ -20,7 +22,6 @@ RUN npm run build
 
 # Find the actual build output directory (robust search)
 RUN set -eux; \
-    # Preferred candidates (keeps compatibility with previous Dockerfile)
     candidates="dist build public public/app frontend/dist backend/public/app"; \
     out=""; \
     for p in $candidates; do \
@@ -29,7 +30,6 @@ RUN set -eux; \
         break; \
       fi; \
     done; \
-    # fallback: search for any index.html produced by the build and use its parent dir
     if [ -z "$out" ]; then \
       out=$(find /app -type f -name index.html -printf '%h\n' | head -n1 || true); \
     fi; \
@@ -42,7 +42,17 @@ RUN set -eux; \
     fi; \
     echo "Found build output at: $out"; \
     mkdir -p /static; \
-    cp -a "$out"/. /static/
+    cp -a "$out"/. /static/; \
+    if [ "x$DEBUG_BUILD" = "xtrue" ]; then \
+      echo "==== DEBUG_BUILD: listing /static (top 200 entries) ===="; \
+      find /static -maxdepth 4 -type f -print | sed -n '1,200p' || true; \
+      if [ -f /static/index.html ]; then \
+        echo "==== DEBUG_BUILD: head of /static/index.html (first 200 lines) ===="; \
+        sed -n '1,200p' /static/index.html || true; \
+      else \
+        echo "==== DEBUG_BUILD: no /static/index.html found ===="; \
+      fi; \
+    fi
 
 # ---- serve stage ----
 FROM nginx:1.29.1-alpine
