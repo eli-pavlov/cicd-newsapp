@@ -12,7 +12,7 @@ COPY . .
 
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \
-    PORT=8080
+    PORT=3000
 WORKDIR /app
 
 COPY --from=build /app/node_modules ./node_modules
