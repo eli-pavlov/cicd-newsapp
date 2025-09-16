@@ -195,20 +195,21 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build & Push (multi-arch)
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           context: ./src
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          no-cache: true                # force rebuild while debugging (remove/false for normal runs)
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
-            DEBUG_BUILD=${{ inputs.debug }}   # <<< ADDED: enable Dockerfile to print index.html during build when true
-          tags: ${{ steps.tags.outputs.tags }}
+            DEBUG_BUILD=true
+          tags: |
+            ${{ env.DOCKERHUB_USER }}/newsapp-frontend:${{ steps.set_tag.outputs.tag }}
+            ${{ env.DOCKERHUB_USER }}/newsapp-frontend:latest
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
