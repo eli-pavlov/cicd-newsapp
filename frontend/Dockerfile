@@ -20,21 +20,29 @@ ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
 COPY . .
 RUN npm run build
 
-# Find the actual build output directory (robust search)
+# Find the actual build output directory (robust search, require index.html)
 RUN set -eux; \
     candidates="dist build public public/app frontend/dist backend/public/app"; \
     out=""; \
     for p in $candidates; do \
-      if [ -d "/app/$p" ] && [ "$(ls -A "/app/$p" 2>/dev/null || true)" ]; then \
-        out="/app/$p"; \
-        break; \
+      if [ -d "/app/$p" ]; then \
+        # only select this candidate if it contains an HTML entrypoint
+        if find "/app/$p" -maxdepth 2 -type f \( -iname "index.html" -o -iname "index.htm" \) -print -quit >/dev/null 2>&1; then \
+          if [ "$(ls -A "/app/$p" 2>/dev/null || true)" ]; then \
+            out="/app/$p"; \
+            break; \
+          fi; \
+        else \
+          echo "Skipping /app/$p (no index.html found)"; \
+        fi; \
       fi; \
     done; \
+    # fallback: search the tree for any index.html produced by the build and use its parent dir
     if [ -z "$out" ]; then \
-      out=$(find /app -type f -name index.html -printf '%h\n' | head -n1 || true); \
+      out=$(find /app -type f -iname "index.html" -printf '%h\n' | head -n1 || true); \
     fi; \
     if [ -z "$out" ]; then \
-      echo "ERROR: No build output found. Looked in: $candidates"; \
+      echo "ERROR: No build output found (no index.html). Looked in: $candidates"; \
       echo "Top-level /app listing:"; ls -la /app || true; \
       echo "Searching deeper for likely build dirs..."; \
       find /app -maxdepth 4 -type d -print || true; \
@@ -45,7 +53,7 @@ RUN set -eux; \
     cp -a "$out"/. /static/; \
     if [ "x$DEBUG_BUILD" = "xtrue" ]; then \
       echo "==== DEBUG_BUILD: listing /static (top 200 entries) ===="; \
-      find /static -maxdepth 4 -type f -print | sed -n '1,200p' || true; \
+      find /static -maxdepth 6 -type f -print | sed -n '1,200p' || true; \
       if [ -f /static/index.html ]; then \
         echo "==== DEBUG_BUILD: head of /static/index.html (first 200 lines) ===="; \
         sed -n '1,200p' /static/index.html || true; \
@@ -53,6 +61,7 @@ RUN set -eux; \
         echo "==== DEBUG_BUILD: no /static/index.html found ===="; \
       fi; \
     fi
+
 
 # ---- serve stage ----
 FROM nginx:1.29.1-alpine
