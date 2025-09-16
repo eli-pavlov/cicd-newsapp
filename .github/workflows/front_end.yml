@@ -222,25 +222,75 @@ jobs:
 
 
 
-      - name: Inspect image filesystem (copy index.html from image)   # <<< ADD THIS
+      - name: Inspect image filesystem (list + dump .html files)
         if: always()
         run: |
           set -euo pipefail
+
           IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
           TMP_NAME="ci-inspect-${{ github.run_id }}"
           mkdir -p image-artifacts || true
-          # create stopped container we can copy from
-          docker create --name "${TMP_NAME}" "${IMAGE_FULL}" >/dev/null
-          # try common locations for index.html
-          for p in /usr/share/nginx/html/index.html /usr/share/nginx/html/index.htm /var/www/html/index.html /usr/share/nginx/html/index.html; do
-            if docker cp "${TMP_NAME}:${p}" image-artifacts/index-from-image.html 2>/dev/null; then
-              echo "Copied ${p} from image -> image-artifacts/index-from-image.html"
-              break
+
+          echo "Creating temporary container ${TMP_NAME} from ${IMAGE_FULL} (used for docker cp fallback)..."
+          docker create --name "${TMP_NAME}" "${IMAGE_FULL}" >/dev/null 2>&1 || true
+
+          echo "Searching image ${IMAGE_FULL} for .html/.htm files (maxdepth 8)..."
+          # Use image's shell to run find so search runs inside the image filesystem
+          docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "find / -xdev -maxdepth 8 -type f \( -iname '*.html' -o -iname '*.htm' \) -print 2>/dev/null" > image-artifacts/html-files.txt || true
+
+          # If nothing found, record diagnostic checks
+          if [ ! -s image-artifacts/html-files.txt ]; then
+            echo "No html files found by find — collecting directory listings for common webroots and build output dirs..." >> image-artifacts/html-files.txt
+            for p in /usr/share/nginx/html /var/www/html /app/dist /app/build /app/backend/public/app /app/public /opt/app; do
+              echo "---- ls ${p} ----" >> image-artifacts/html-files.txt
+              docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "ls -la ${p} || true" >> image-artifacts/html-files.txt || true
+            done
+          fi
+
+          # Read discovered paths and dump each file (limit lines to avoid massive artifacts)
+          idx=0
+          while IFS= read -r path; do
+            [ -z "${path}" ] && continue
+            # skip our inserted "---- ls" lines if present
+            if echo "${path}" | grep -q '^---- ls'; then
+              continue
+            fi
+            # sanitize name for filesystem
+            safe=$(echo "${path}" | sed 's/[^a-zA-Z0-9]/_/g' | sed 's/_\+/_/g' | sed 's/^_//; s/_$//')
+            out="image-artifacts/html-$(printf "%03d" ${idx})-${safe}.html"
+            echo "Dumping ${path} -> ${out} (first 1000 lines)..."
+            # primary attempt: run sed inside image to output file contents (keeps us from needing docker cp)
+            docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "sed -n '1,1000p' '${path}'" > "${out}" 2>/dev/null || true
+
+            # fallback: try docker cp from created container if the primary attempt produced nothing
+            if [ ! -s "${out}" ]; then
+              if docker cp "${TMP_NAME}:${path}" "${out}" 2>/dev/null; then
+                echo "Copied ${path} via docker cp -> ${out}"
+              else
+                echo "FAILED to extract ${path}" >> image-artifacts/html-files.txt
+              fi
+            fi
+
+            idx=$((idx+1))
+          done < image-artifacts/html-files.txt || true
+
+          # Also try canonical fallback paths (attempt docker cp and record if successful)
+          for p in /usr/share/nginx/html/index.html /usr/share/nginx/html/index.htm /var/www/html/index.html /app/dist/index.html /app/build/index.html /app/backend/public/app/index.html; do
+            out="image-artifacts/fallback-$(basename ${p})"
+            if docker cp "${TMP_NAME}:${p}" "${out}" 2>/dev/null; then
+              echo "Copied fallback ${p} -> ${out}" >> image-artifacts/html-files.txt
             fi
           done || true
-          # also list the webroot
-          docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "ls -la /usr/share/nginx/html || true" > image-artifacts/webroot-listing.txt || true
+
+          # Save a listing of the usual nginx webroot
+          docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "echo '--- /usr/share/nginx/html ---'; ls -la /usr/share/nginx/html || true" > image-artifacts/webroot-listing.txt || true
+
+          # cleanup
           docker rm -f "${TMP_NAME}" >/dev/null 2>&1 || true
+
+          echo "Done. Found html paths (image-artifacts/html-files.txt) and dumped html files to image-artifacts/*.html"
+
+
           
       - name: Upload image-inspect artifacts
         if: always()
