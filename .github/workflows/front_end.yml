@@ -25,6 +25,11 @@ on:
         required: true
         default: "newsapp-frontend"
         type: string
+      debug:                             # <<< ADDED: opt-in debug flag
+        description: "Enable build + runtime debug (print index.html, collect artifacts)"
+        required: false
+        default: "false"
+        type: string
 
 permissions:
   contents: read
@@ -202,6 +207,7 @@ jobs:
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
+            DEBUG_BUILD=${{ inputs.debug }}   # <<< ADDED: enable Dockerfile to print index.html during build when true
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
@@ -265,6 +271,7 @@ jobs:
               docker logs --tail 200 "${MOCK_NAME}" || true
               EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER_NAME}" || echo "unknown")
               echo "::error::Frontend exit code: ${EXIT_CODE}"
+              # cleanup on failure
               docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
               docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
               docker network rm "${NET}" >/dev/null 2>&1 || true
@@ -277,9 +284,7 @@ jobs:
               echo "Success: frontend responded with HTTP ${http_code}"
               echo "------ frontend logs (tail 200) ------"
               docker logs --tail 200 "${CONTAINER_NAME}" || true
-              docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-              docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
-              docker network rm "${NET}" >/dev/null 2>&1 || true
+              # NOTE: DO NOT remove the container here — we want to copy index.html and HTTP body in following step
               exit 0
             fi
 
@@ -297,6 +302,53 @@ jobs:
           docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
           docker network rm "${NET}" >/dev/null 2>&1 || true
           exit 1
+
+      - name: Collect index.html + HTTP root body (upload artifacts)   # <<< ADDED
+        if: always()
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          CONTAINER_NAME="ci-test-frontend"
+          NET="ci-net-${GITHUB_RUN_ID}"
+          mkdir -p artifacts
+
+          # Try to copy index.html from container filesystem
+          if docker ps --filter "name=${CONTAINER_NAME}" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
+            if docker exec "${CONTAINER_NAME}" test -f /usr/share/nginx/html/index.html >/dev/null 2>&1; then
+              echo "Copying /usr/share/nginx/html/index.html from container..."
+              docker exec "${CONTAINER_NAME}" sh -c 'sed -n "1,500p" /usr/share/nginx/html/index.html' > artifacts/index.html || true
+            else
+              echo "index.html not found inside container; trying alternative paths..."
+              # Try other likely locations in the container
+              docker exec "${CONTAINER_NAME}" sh -c 'for p in /usr/share/nginx/html/index.html /usr/share/nginx/html/index.htm /var/www/html/index.html; do if [ -f "$p" ]; then echo "FOUND:$p"; sed -n "1,500p" "$p"; break; fi; done' > artifacts/index.html || true
+            fi
+          else
+            echo "Container ${CONTAINER_NAME} is not running; cannot copy index.html" > artifacts/index.html
+          fi
+
+          # Capture HTTP root body as well
+          echo "Saving HTTP root response (first 500 lines) to artifacts/http-root.html"
+          curl -s "http://localhost:8082/" | sed -n '1,500p' > artifacts/http-root.html || true
+
+      - name: Upload frontend debug artifacts                            # <<< ADDED
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-debug
+          path: artifacts/*
+
+      - name: Cleanup frontend + mock containers and network              # <<< ADDED
+        if: always()
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          CONTAINER_NAME="ci-test-frontend"
+          MOCK_NAME="ci-backend-mock"
+          NET="ci-net-${GITHUB_RUN_ID}"
+          echo "Stopping/removing containers and network..."
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
+          docker network rm "${NET}" >/dev/null 2>&1 || true
 
       - name: Checkout manifests repo
         uses: actions/checkout@v4
