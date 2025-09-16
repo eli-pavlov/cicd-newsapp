@@ -182,10 +182,6 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "src HEAD (full): $(git -C src rev-parse HEAD)"
-            echo "src HEAD (short): $(git -C src rev-parse --short=7 HEAD)"
-            git -C src --no-pager log -n3 --oneline
-            echo "GITHUB_RUN_NUMBER=$GITHUB_RUN_NUMBER, GITHUB_RUN_ID=$GITHUB_RUN_ID"
             echo "tags<<EOF"
             echo "${IMAGE}:${TAG}"
             if [[ "${LATEST}" == "true" ]]; then
