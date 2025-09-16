@@ -31,19 +31,15 @@ COPY --from=build /app/backend/public/app/ /usr/share/nginx/html-preferred/
 COPY --from=build /app/dist/ /usr/share/nginx/html-fallback/
 
 # Merge into real webroot without overwriting preferred files.
-# We copy all preferred files first, then copy fallback files only if they don't already exist.
 RUN mkdir -p /usr/share/nginx/html && \
-    # copy preferred (preserve structure)
     if [ -d /usr/share/nginx/html-preferred ]; then \
       cp -a /usr/share/nginx/html-preferred/. /usr/share/nginx/html/ || true; \
     fi && \
-    # copy fallback but don't overwrite existing files
     if [ -d /usr/share/nginx/html-fallback ]; then \
       for f in /usr/share/nginx/html-fallback/*; do \
         [ ! -e "$f" ] && continue; \
         dest="/usr/share/nginx/html/$(basename "$f")"; \
         if [ -e "$dest" ]; then \
-          # if dest exists, we skip to avoid overwriting (preferred wins) - but still merge directories
           if [ -d "$f" ] && [ -d "$dest" ]; then \
             cp -a "$f/." "$dest/" || true; \
           fi; \
@@ -54,9 +50,14 @@ RUN mkdir -p /usr/share/nginx/html && \
     fi && \
     rm -rf /usr/share/nginx/html-preferred /usr/share/nginx/html-fallback || true
 
-# Optional: copy custom nginx config if present in repo build context (src/nginx copied earlier by CI)
-COPY nginx/ /etc/nginx/conf.d/  # no-op if folder doesn't exist
+# Copy nginx template + entrypoint (to support envsubst at container start)
+# These lines assume your CI copies frontend/nginx/* into src/nginx prior to build
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/entrypoint.sh /docker-entrypoint.d/entrypoint.sh
+RUN chmod +x /docker-entrypoint.d/entrypoint.sh
 
 EXPOSE 8080
 
+# entrypoint prepares config then execs passed command (nginx) so keep CMD as before
+ENTRYPOINT [ "/docker-entrypoint.d/entrypoint.sh" ]
 CMD ["nginx", "-g", "daemon off;"]
