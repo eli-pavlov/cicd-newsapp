@@ -323,7 +323,7 @@ jobs:
           # Start a tiny mock backend (python http server) on the network
           MOCK_NAME="ci-backend-mock"
           docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
-          docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 8080" >/dev/null
+          docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 3000" >/dev/null
 
           # Ensure no old frontend container
           docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -333,7 +333,7 @@ jobs:
             --network "${NET}" \
             -p "${HOST_PORT}:${CONTAINER_PORT}" \
             -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
-            -e BACKEND_SERVICE_PORT="8080" \
+            -e BACKEND_SERVICE_PORT="3000" \
             "${IMAGE_FULL}"
 
           # Poll frontend as before; if either container exits we dump diagnostics
