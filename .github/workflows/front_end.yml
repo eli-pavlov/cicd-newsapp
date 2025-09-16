@@ -452,16 +452,28 @@ jobs:
         working-directory: manifests
         env:
           BACKEND_FILE: values/backend/${{ steps.deploy.outputs.values_suffix }}.yaml
+          K8S_NS: ${{ steps.deploy.outputs.k8s_ns }}
         run: |
           set -euo pipefail
+
           test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-          BACKEND_NAME=$(yq -r '.backend.fullnameOverride // .backend.app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.backend.service.port // 8080' "${BACKEND_FILE}")
+
+          # Extract correct top-level keys from backend values file (not ".backend.*")
+          BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
+
           if [ -z "$BACKEND_NAME" ] || [ -z "$BACKEND_PORT" ]; then
             echo "::error::Failed to extract backend service details from ${BACKEND_FILE}"
             exit 1
           fi
-          echo "Validated backend service: ${BACKEND_NAME}:${BACKEND_PORT}"
+
+          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
+          echo "Validated backend service: ${BACKEND_HOST}:${BACKEND_PORT}"
+
+          # Export for following actions that might read environment (optional - for debug)
+          echo "backend_host=${BACKEND_HOST}" >> "$GITHUB_OUTPUT"
+          echo "backend_port=${BACKEND_PORT}" >> "$GITHUB_OUTPUT"
+
 
       - name: Update manifests and lint Helm chart
         working-directory: manifests
