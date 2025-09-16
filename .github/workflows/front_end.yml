@@ -220,6 +220,35 @@ jobs:
           echo "Pulling ${IMAGE}"
           docker pull "${IMAGE}"
 
+
+
+      - name: Inspect image filesystem (copy index.html from image)   # <<< ADD THIS
+        if: always()
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          TMP_NAME="ci-inspect-${{ github.run_id }}"
+          mkdir -p image-artifacts || true
+          # create stopped container we can copy from
+          docker create --name "${TMP_NAME}" "${IMAGE_FULL}" >/dev/null
+          # try common locations for index.html
+          for p in /usr/share/nginx/html/index.html /usr/share/nginx/html/index.htm /var/www/html/index.html /usr/share/nginx/html/index.html; do
+            if docker cp "${TMP_NAME}:${p}" image-artifacts/index-from-image.html 2>/dev/null; then
+              echo "Copied ${p} from image -> image-artifacts/index-from-image.html"
+              break
+            fi
+          done || true
+          # also list the webroot
+          docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "ls -la /usr/share/nginx/html || true" > image-artifacts/webroot-listing.txt || true
+          docker rm -f "${TMP_NAME}" >/dev/null 2>&1 || true
+          
+      - name: Upload image-inspect artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-inspect
+          path: image-artifacts/*
+
       - name: Run frontend container and test HTTP root (uses mock backend)
         shell: bash
         env:
