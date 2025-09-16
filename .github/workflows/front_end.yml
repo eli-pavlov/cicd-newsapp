@@ -354,12 +354,11 @@ jobs:
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
           # 1. CORRECTED: Use the right key paths for the frontend values file
-          yq -i '
-            .image.repository = strenv(IMAGE_REPO) |
-            .image.tag        = strenv(IMAGE_TAG)  |
-            .env.plain.BACKEND_SERVICE_HOST = strenv(BACKEND_HOST) |
-            .env.plain.BACKEND_SERVICE_PORT = strenv(BACKEND_PORT)
-          ' "${FRONTEND_FILE}"
+          echo "--- Before yq ---"
+          cat "${FRONTEND_FILE}"
+          yq -i ".image.repository = \"${IMAGE_REPO}\" | .image.tag = \"${IMAGE_TAG}\" | .env.plain.BACKEND_SERVICE_HOST = \"${BACKEND_HOST}\" | .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"" "${FRONTEND_FILE}"
+          echo "--- After yq ---"
+          cat "${FRONTEND_FILE}"
 
           echo "Linting backend chart..."
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
