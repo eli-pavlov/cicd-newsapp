@@ -480,17 +480,27 @@ jobs:
           test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
           test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
 
+          # Extract backend name/port from backend values (use top-level keys)
           BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.service.port // 8080' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
+
+          # Compose full DNS for the service in the target namespace
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          # 1. CORRECTED: Use the right key paths for the frontend values file
-          echo "--- Before yq ---"
-          cat "${FRONTEND_FILE}"
-          yq -i ".image.repository = \"${IMAGE_REPO}\" | .image.tag = \"${IMAGE_TAG}\" | .env.plain.BACKEND_SERVICE_HOST = \"${BACKEND_HOST}\" | .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"" "${FRONTEND_FILE}"
-          echo "--- After yq ---"
-          cat "${FRONTEND_FILE}"
+          echo "Updating frontend (${FRONTEND_FILE}) to use image ${IMAGE_REPO}:${IMAGE_TAG} and backend ${BACKEND_HOST}:${BACKEND_PORT}"
 
+          # Update frontend values: image + backend env values
+          yq -i "
+            .image.repository = \"${IMAGE_REPO}\" |
+            .image.tag = \"${IMAGE_TAG}\" |
+            .env.plain.BACKEND_SERVICE_HOST = \"${BACKEND_HOST}\" |
+            .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"
+          " "${FRONTEND_FILE}"
+
+          echo "Frontend values after update:"
+          yq '.' "${FRONTEND_FILE}"
+
+          # Lint & render charts as before
           echo "Linting backend chart..."
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
@@ -503,6 +513,7 @@ jobs:
           echo "Rendering frontend template..."
           helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
 
+          # commit changes to manifests repo
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -512,3 +523,4 @@ jobs:
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
           git push origin "${BRANCH}"
+
