@@ -2,63 +2,66 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
-# Install deps (dev deps needed to build)
+# Install deps (dev deps are needed to build)
+# copy lockfile if present for reproducible installs
 COPY package*.json ./
-# If you commit package-lock.json, it will be picked up by the COPY above
-RUN npm ci --silent
+# if you have package-lock.json or pnpm-lock.yaml this will pick it up from the glob
+RUN npm ci
 
 # Build-time config for Vite
 ARG VITE_SERVER_URL
 ARG VITE_NEWS_INTERVAL_IN_MIN
-ENV VITE_SERVER_URL=${VITE_SERVER_URL:-/api}
-ENV VITE_NEWS_INTERVAL_IN_MIN=${VITE_NEWS_INTERVAL_IN_MIN:-5}
+ENV VITE_SERVER_URL=$VITE_SERVER_URL
+ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
 
 # Bring in the source and build
 COPY . .
 RUN npm run build
 
-# Normalize build output to a fixed path and fail loudly if nothing found
+# Find the actual build output directory (robust search)
 RUN set -eux; \
-    candidates="dist build public public/app frontend/dist backend/public/app out build/dist dist/client"; \
+    # Preferred candidates (keeps compatibility with previous Dockerfile)
+    candidates="dist build public public/app frontend/dist backend/public/app"; \
     out=""; \
     for p in $candidates; do \
-      if [ -d "/app/$p" ] && [ -n "$(ls -A /app/$p || true)" ]; then \
+      if [ -d "/app/$p" ] && [ "$(ls -A "/app/$p" 2>/dev/null || true)" ]; then \
         out="/app/$p"; \
         break; \
       fi; \
     done; \
+    # fallback: search for any index.html produced by the build and use its parent dir
     if [ -z "$out" ]; then \
-      echo "ERROR: No build output found in any of: $candidates"; \
-      echo "Top-level /app listing:"; ls -la /app; \
-      echo "Searching for likely build dirs..."; \
-      find /app -maxdepth 3 -type d \( -name dist -o -name build -o -path '*/public/app' -o -name frontend -o -name out \) -print; \
+      out=$(find /app -type f -name index.html -printf '%h\n' | head -n1 || true); \
+    fi; \
+    if [ -z "$out" ]; then \
+      echo "ERROR: No build output found. Looked in: $candidates"; \
+      echo "Top-level /app listing:"; ls -la /app || true; \
+      echo "Searching deeper for likely build dirs..."; \
+      find /app -maxdepth 4 -type d -print || true; \
       exit 1; \
     fi; \
-    echo "Using build output: $out"; \
-    mkdir -p /static; cp -a "$out/." /static/
+    echo "Found build output at: $out"; \
+    mkdir -p /static; \
+    cp -a "$out"/. /static/
 
 # ---- serve stage ----
-FROM nginx:1.27-alpine
+FROM nginx:1.29.1-alpine
 
-# envsubst (used by entrypoint.sh) and small niceties
+# envsubst used by entrypoint.sh
 RUN apk add --no-cache gettext
 
-# Remove default nginx welcome content so we don't accidentally serve it
-RUN rm -rf /usr/share/nginx/html/*
-
-# Copy static assets from build stage
+# Copy static assets
 COPY --from=build /static /usr/share/nginx/html
 
-# Copy nginx template + entrypoint (expect these paths in repo)
+# Copy Nginx config template and entrypoint
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/entrypoint.sh /entrypoint.sh
 
-# Make entrypoint executable and fix ownership so nginx (non-root user) can read files
+# Ensure entrypoint and nginx state are writeable where needed
 RUN chmod +x /entrypoint.sh \
- && chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx/conf.d \
- && touch /var/run/nginx.pid && chown nginx:nginx /var/run/nginx.pid
+    && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /usr/share/nginx/html \
+    && touch /var/run/nginx.pid && chown -R nginx:nginx /var/run/nginx.pid
 
-# Run nginx as the nginx user for safety
 USER nginx
 
 EXPOSE 8080
