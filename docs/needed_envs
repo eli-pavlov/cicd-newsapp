@@ -15,3 +15,15 @@ BACKEND_SERVICE_PORT={{BACKEND_SERVICE_PORT}}          # e.g. 8080
 DB_ENGINE_TYPE={{DB_ENGINE_TYPE}}
 # connection string : [protocol]://[username]:[password]@[host]:[port]/[database]
 DB_URI={{DB_URI}}
+
+# AWS_S3 | DISK
+STORAGE_TYPE=
+
+# In case of STORAGE_TYPE = AWS_S3
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_REGION=
+AWS_BUCKET= [ the name of the bucket where to create the movies folder ]
+
+# In case of STORAGE_TYPE = DISK
+DISK_ROOT_PATH= [ full path on disk to the root directory where to create the movies folder ]
