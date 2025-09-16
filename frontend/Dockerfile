@@ -1,32 +1,43 @@
-# ---- build stage ----
-FROM node:22-alpine AS build
-WORKDIR /app
+# syntax=docker/dockerfile:1
 
+########################################
+# Build stage
+########################################
+ARG NODE_IMAGE=node:22-alpine
 ARG DEBUG_BUILD=false
-ENV DEBUG_BUILD=${DEBUG_BUILD}
+ARG VITE_SERVER_URL=/api
+ARG VITE_NEWS_INTERVAL_IN_MIN=5
 
-# Install deps (dev deps are needed to build)
-# copy lockfile if present for reproducible installs
-COPY package*.json ./
-RUN npm ci
+FROM ${NODE_IMAGE} AS build
 
-# Build-time config for Vite
+# Make build-time args visible in this stage
+ARG DEBUG_BUILD
 ARG VITE_SERVER_URL
 ARG VITE_NEWS_INTERVAL_IN_MIN
-ENV VITE_SERVER_URL=$VITE_SERVER_URL
-ENV VITE_NEWS_INTERVAL_IN_MIN=$VITE_NEWS_INTERVAL_IN_MIN
 
-# Bring in the source and build
+ENV VITE_SERVER_URL=${VITE_SERVER_URL}
+ENV VITE_NEWS_INTERVAL_IN_MIN=${VITE_NEWS_INTERVAL_IN_MIN}
+ENV DEBUG_BUILD=${DEBUG_BUILD}
+
+WORKDIR /app
+
+# Install build dependencies early (cache friendly)
+COPY package.json package-lock.json* yarn.lock* ./
+# Use npm ci when package-lock present; fallback to npm install
+RUN if [ -f package-lock.json ]; then npm ci --silent; else npm install --silent; fi
+
+# Copy rest of source
 COPY . .
+
+# Run the frontend build
 RUN npm run build
 
-# Find the actual build output directory (robust search, require index.html)
+# Locate build output (robustly) and copy into /static
 RUN set -eux; \
     candidates="dist build public public/app frontend/dist backend/public/app"; \
     out=""; \
     for p in $candidates; do \
       if [ -d "/app/$p" ]; then \
-        # only select this candidate if it contains an HTML entrypoint
         if find "/app/$p" -maxdepth 2 -type f \( -iname "index.html" -o -iname "index.htm" \) -print -quit >/dev/null 2>&1; then \
           if [ "$(ls -A "/app/$p" 2>/dev/null || true)" ]; then \
             out="/app/$p"; \
@@ -37,21 +48,20 @@ RUN set -eux; \
         fi; \
       fi; \
     done; \
-    # fallback: search the tree for any index.html produced by the build and use its parent dir
     if [ -z "$out" ]; then \
       out=$(find /app -type f -iname "index.html" -printf '%h\n' | head -n1 || true); \
     fi; \
     if [ -z "$out" ]; then \
       echo "ERROR: No build output found (no index.html). Looked in: $candidates"; \
       echo "Top-level /app listing:"; ls -la /app || true; \
-      echo "Searching deeper for likely build dirs..."; \
-      find /app -maxdepth 4 -type d -print || true; \
+      echo "Searching deeper for likely build dirs..."; find /app -maxdepth 4 -type d -print || true; \
       exit 1; \
     fi; \
     echo "Found build output at: $out"; \
     mkdir -p /static; \
     cp -a "$out"/. /static/; \
-    if [ "x$DEBUG_BUILD" = "xtrue" ]; then \
+    # DEBUG dump controlled by clean comparison (no comments inside the quoted string!)
+    if [ "x${DEBUG_BUILD}" = "xtrue" ]; then \
       echo "==== DEBUG_BUILD: listing /static (top 200 entries) ===="; \
       find /static -maxdepth 6 -type f -print | sed -n '1,200p' || true; \
       if [ -f /static/index.html ]; then \
@@ -62,28 +72,23 @@ RUN set -eux; \
       fi; \
     fi
 
+########################################
+# Runtime stage (nginx)
+########################################
+FROM nginx:1.29.1-alpine AS runtime
 
-# ---- serve stage ----
-FROM nginx:1.29.1-alpine
-
-# envsubst used by entrypoint.sh
-RUN apk add --no-cache gettext
-
-# Copy static assets
+# Bring in optional entrypoint and nginx templates if you use them
+# (These should exist in your repo's nginx/ directory; keep in sync with your repo)
 COPY --from=build /static /usr/share/nginx/html
-
-# Copy Nginx config template and entrypoint
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/entrypoint.sh /entrypoint.sh
 
-# Ensure entrypoint and nginx state are writeable where needed
+# Make entrypoint executable and set proper permissions
 RUN chmod +x /entrypoint.sh \
     && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /usr/share/nginx/html \
     && touch /var/run/nginx.pid && chown -R nginx:nginx /var/run/nginx.pid
 
-USER nginx
-
-EXPOSE 8080
+EXPOSE 80
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
