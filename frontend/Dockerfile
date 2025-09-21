@@ -14,6 +14,8 @@ ENV VITE_SERVER_URL=${VITE_SERVER_URL}
 ENV VITE_NEWS_INTERVAL_IN_MIN=${VITE_NEWS_INTERVAL_IN_MIN}
 ENV DEBUG_BUILD=${DEBUG_BUILD}
 
+# node ./src/utils/git_info.js
+
 RUN npm run build
 
 # Ensure expected output directories exist so final-stage COPY never fails
