@@ -208,6 +208,8 @@ jobs:
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
             DEBUG_BUILD=true
+            VITE_FRONTEND_GIT_BRANCH=${{ steps.compute-tags.outputs.branch }}
+            VITE_FRONTEND_GIT_COMMIT=${{ steps.compute-tags.outputs.commit }}
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}

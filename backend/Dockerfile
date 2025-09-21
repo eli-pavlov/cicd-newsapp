@@ -8,11 +8,20 @@ RUN npm ci --omit=dev
 
 COPY . .
 
+
+
 # RUN node ./services/git_info.js
 # If you use TypeScript or a build step, uncomment:
 # RUN npm run build
 
 FROM node:22-alpine AS runtime
+
+# Accept build-args (they are provided by GH Actions) and make them runtime envs
+ARG BACKEND_GIT_BRANCH
+ARG BACKEND_GIT_COMMIT
+ENV BACKEND_GIT_BRANCH=${BACKEND_GIT_BRANCH}
+ENV BACKEND_GIT_COMMIT=${BACKEND_GIT_COMMIT}
+
 ENV NODE_ENV=production \
     PORT=3000
 WORKDIR /app

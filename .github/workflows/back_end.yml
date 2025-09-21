@@ -192,6 +192,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            BACKEND_GIT_BRANCH=${{ steps.compute-tags.outputs.branch }}
+            BACKEND_GIT_COMMIT=${{ steps.compute-tags.outputs.commit }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
