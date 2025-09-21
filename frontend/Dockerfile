@@ -18,6 +18,13 @@ ENV DEBUG_BUILD=${DEBUG_BUILD}
 ENV VITE_FRONTEND_GIT_BRANCH=${VITE_FRONTEND_GIT_BRANCH}
 ENV VITE_FRONTEND_GIT_COMMIT=${VITE_FRONTEND_GIT_COMMIT}
 
+
+# persist build-info into a file inside the build image
+RUN mkdir -p /etc/app && \
+    printf 'VITE_FRONTEND_GIT_BRANCH=%s\nVITE_FRONTEND_GIT_COMMIT=%s\n' \
+      "${VITE_FRONTEND_GIT_BRANCH:-}" "${VITE_FRONTEND_GIT_COMMIT:-}" \
+    > /etc/app/build-info.env
+
 # node ./src/utils/git_info.js
 
 RUN npm run build
@@ -29,6 +36,10 @@ RUN mkdir -p /app/backend/public/app /app/dist || true
 # --- runtime stage ---
 FROM nginx:1.29.1-alpine AS runtime
 
+# copy the build-info file produced in the build stage
+COPY --from=build /etc/app/build-info.env /etc/app/build-info.env
+
+# (optionally) also accept runtime override ARGs
 ARG VITE_FRONTEND_GIT_BRANCH
 ARG VITE_FRONTEND_GIT_COMMIT
 ENV VITE_FRONTEND_GIT_BRANCH=${VITE_FRONTEND_GIT_BRANCH}
