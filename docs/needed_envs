@@ -27,3 +27,10 @@ AWS_BUCKET= [ the name of the bucket where to create the movies folder ]
 
 # In case of STORAGE_TYPE = DISK
 DISK_ROOT_PATH= [ full path on disk to the root directory where to create the movies folder ]
+
+# Frontend commit info
+VITE_FRONTEND_GIT_BRANCH=
+VITE_FRONTEND_GIT_COMMIT=
+# Backedn commit info
+BACKEND_GIT_BRANCH=
+BACKEND_GIT_COMMIT
