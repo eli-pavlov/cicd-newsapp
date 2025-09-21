@@ -8,7 +8,7 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-RUN node ./services/git_info.js
+# RUN node ./services/git_info.js
 # If you use TypeScript or a build step, uncomment:
 # RUN npm run build
 
