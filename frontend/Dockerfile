@@ -29,6 +29,11 @@ RUN mkdir -p /app/backend/public/app /app/dist || true
 # --- runtime stage ---
 FROM nginx:1.29.1-alpine AS runtime
 
+ARG VITE_FRONTEND_GIT_BRANCH
+ARG VITE_FRONTEND_GIT_COMMIT
+ENV VITE_FRONTEND_GIT_BRANCH=${VITE_FRONTEND_GIT_BRANCH}
+ENV VITE_FRONTEND_GIT_COMMIT=${VITE_FRONTEND_GIT_COMMIT}
+
 # Clean webroot
 RUN rm -rf /usr/share/nginx/html/*
 
