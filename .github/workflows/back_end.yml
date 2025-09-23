@@ -1,29 +1,29 @@
-name: Build, Test, & Push Backend Image
+name: Build, Test, & Push Frontend Image
 
 on:
   repository_dispatch:
-    types: [backend]
+    types: [frontend]
   push:
     branches: [main, development]
     paths:
-      - "backend/**"
-      - ".github/workflows/back_end.yml"
+      - "frontend/**"
+      - ".github/workflows/front_end.yml"
   workflow_dispatch:
     inputs:
       source_repo:
-        description: "Owner/repo of the backend source repository"
+        description: "Owner/repo of the frontend source repository (e.g., ghGill/newsAppFront)"
         required: true
-        default: "ghGill/newsAppBackend"
+        default: "ghGill/newsAppFront"
         type: string
       source_ref:
-        description: "Ref to build (HEAD, branch, tag, or commit SHA)"
+        description: "Git ref to build (branch, tag, or commit SHA, e.g., main, v1.0.0, abc1234)"
         required: true
         default: "main"
         type: string
       app_name:
-        description: "App name used in image name"
+        description: "Application name used in the Docker image (e.g., newsapp-frontend)"
         required: true
-        default: "newsapp-backend"
+        default: "newsapp-frontend"
         type: string
 
 permissions:
@@ -31,23 +31,27 @@ permissions:
   packages: write
 
 concurrency:
-  group: cicd-${{ github.workflow }}-manifests
-  cancel-in-progress: false
+  group: cicd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  MANIFEST_APP_DEFAULT: newsapp-backend
+  MANIFEST_APP_DEFAULT: newsapp-frontend
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
   MANIFESTS_BRANCH: main
   YQ_VERSION: v4.44.3
 
 jobs:
-  docker:
+  build:
+    name: Build Frontend Image
     if: >
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'repository_dispatch' && github.event.action == 'backend')
+      (github.event_name == 'repository_dispatch' && github.event.action == 'frontend')
     runs-on: ubuntu-latest
-    
+    outputs:
+      # These outputs are now primarily for reference, as we use artifacts for data passing
+      image_tag: ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
+
     steps:
       - name: Checkout (CI/CD repo)
         uses: actions/checkout@v4
@@ -60,7 +64,7 @@ jobs:
              [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ] || \
              [ -z "${{ secrets.MANIFESTS_REPO }}" ] || \
              [ -z "${{ secrets.GH_TOKEN }}" ]; then
-            echo "::error::Missing one or more required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO, GH_TOKEN"
+            echo "::error::Missing one or more required secrets"
             exit 1
           fi
 
@@ -76,7 +80,7 @@ jobs:
           CP_APP:   ${{ github.event.client_payload.app_name }}
         run: |
           set -euo pipefail
-          SRC_REPO="${INP_REPO:-${CP_REPO:-ghGill/newsAppBackend}}"
+          SRC_REPO="${INP_REPO:-${CP_REPO:-ghGill/newsAppFront}}"
           SRC_REF="${INP_REF:-${CP_REF:-${GITHUB_REF_NAME:-main}}}"
           APP="${INP_APP:-${CP_APP:-$MANIFEST_APP_DEFAULT}}"
           IMAGE="${DOCKERHUB_USER}/${APP}"
@@ -87,7 +91,7 @@ jobs:
             echo "image=${IMAGE}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Checkout backend source repo
+      - name: Checkout frontend source repo
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.ctx.outputs.src_repo }}
@@ -98,18 +102,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f src/Dockerfile ]; then
-            echo "Dockerfile present in src/"
-          elif [ -f backend/Dockerfile ]; then
-            cp backend/Dockerfile src/Dockerfile
+          mkdir -p src/nginx
+          if [ -d "frontend/nginx" ]; then
+            cp -r frontend/nginx/* src/nginx/
+          fi
+          if [ -f frontend/Dockerfile ]; then
+            cp frontend/Dockerfile src/Dockerfile
           else
-            echo "::error::No Dockerfile found (expected src/Dockerfile or backend/Dockerfile)"
+            echo "::error::No Dockerfile found"
             exit 1
           fi
-          if [ -f src/.dockerignore ]; then
-            echo ".dockerignore found in src/"
-          elif [ -f backend/.dockerignore ]; then
-            cp backend/.dockerignore src/.dockerignore
+          if [ -f frontend/.dockerignore ]; then
+            cp frontend/.dockerignore src/.dockerignore
           fi
 
       - name: Compute image tags
@@ -157,14 +161,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Assemble tags
+      
+      - name: Assemble tags for local build
         id: tags
         shell: bash
         env:
@@ -182,54 +180,132 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build & Push (multi-arch)
+      - name: Build image for testing
         uses: docker/build-push-action@v6
         with:
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           context: ./src
           file: ./src/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: linux/amd64
+          load: true
+          push: false
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            BACKEND_GIT_BRANCH=${{ steps.compute-tags.outputs.branch }}
-            BACKEND_GIT_COMMIT=${{ steps.compute-tags.outputs.commit }}
+            VITE_SERVER_URL=/api
+            VITE_NEWS_INTERVAL_IN_MIN=5
+            VITE_FRONTEND_GIT_BRANCH=${{ steps.compute-tags.outputs.branch }}
+            VITE_FRONTEND_GIT_COMMIT=${{ steps.compute-tags.outputs.commit }}
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # ADDED: Save context for downstream jobs as an artifact
       - name: Save context for downstream jobs
         shell: bash
         run: |
-          echo "IMAGE_TAG=${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}" > context.env
+          echo "IMAGE_TAG_FULL=${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}" > context.env
           echo "IMAGE_REPO=${{ steps.ctx.outputs.image }}" >> context.env
           echo "IMAGE_TAG_ONLY=${{ steps.compute-tags.outputs.tag }}" >> context.env
+          echo "IS_LATEST=${{ steps.compute-tags.outputs.is_latest }}" >> context.env
           echo "VALUES_SUFFIX=${{ steps.deploy.outputs.values_suffix }}" >> context.env
-      
+          echo "BRANCH=${{ steps.compute-tags.outputs.branch }}" >> context.env
+          echo "COMMIT=${{ steps.compute-tags.outputs.commit }}" >> context.env
+          echo "SRC_REPO=${{ steps.ctx.outputs.src_repo }}" >> context.env
+          echo "K8S_NS=${{ steps.deploy.outputs.k8s_ns }}" >> context.env
+
       - name: Upload context artifact
         uses: actions/upload-artifact@v4
         with:
-          name: job-context
+          name: job-context-frontend
           path: context.env
 
   test:
-    name: Test Docker Image
+    name: Test Frontend Image
     runs-on: ubuntu-latest
-    needs: docker
+    needs: build
 
     steps:
-      # ADDED: Download the context artifact
       - name: Download context artifact
         uses: actions/download-artifact@v4
         with:
-          name: job-context
+          name: job-context-frontend
 
-      # ADDED: Load context from artifact into environment variables
       - name: Load context into environment
         shell: bash
         run: cat context.env >> $GITHUB_ENV
+      
+      - name: Run frontend container and test
+        shell: bash
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${{ env.IMAGE_TAG_FULL }}"
+          CONTAINER_NAME="ci-test-frontend"
+          NET="ci-net-${GITHUB_RUN_ID}"
+          MOCK_NAME="ci-backend-mock"
+
+          docker network create "${NET}" >/dev/null 2>&1 || true
+          docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 3000" >/dev/null
+          
+          docker run -d --name "${CONTAINER_NAME}" \
+            --network "${NET}" \
+            -p "8080:8080" \
+            -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
+            -e BACKEND_SERVICE_PORT="3000" \
+            "${IMAGE_FULL}"
+
+          echo "Waiting for frontend container to start..."
+          sleep 15
+
+          echo "Checking frontend container health..."
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/" || true)
+          if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
+            echo "Success: frontend responded with HTTP ${http_code}"
+          else
+            echo "::error::Frontend did not respond correctly. HTTP code: ${http_code}"
+            docker logs "${CONTAINER_NAME}"
+            exit 1
+          fi
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          echo "Stopping and removing test containers..."
+          docker stop ci-test-frontend ci-backend-mock || true
+          docker rm ci-test-frontend ci-backend-mock || true
+          docker network rm ci-net-${{ github.run_id }} || true
+
+  push-and-update-manifests:
+    name: Push Image & Update Manifests
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Download context artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: job-context-frontend
+
+      - name: Load context into environment
+        shell: bash
+        run: cat context.env >> $GITHUB_ENV
+
+      - name: Checkout (CI/CD repo)
+        uses: actions/checkout@v4
+        
+      - name: Checkout frontend source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.COMMIT }}
+          path: src
+
+      - name: Prepare build context
+        shell: bash
+        run: |
+          mkdir -p src/nginx
+          if [ -d "frontend/nginx" ]; then cp -r frontend/nginx/* src/nginx/; fi
+          if [ -f frontend/Dockerfile ]; then cp frontend/Dockerfile src/Dockerfile; fi
+          if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -237,71 +313,43 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Start Postgres Database
-        run: |
-          docker run --name test-postgres \
-            -e POSTGRES_PASSWORD=postgres \
-            -e POSTGRES_USER=postgres \
-            -e POSTGRES_DB=news_app \
-            -p 5432:5432 \
-            -d postgres:13
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Pull the built image from registry
-        # CORRECTED: Use the env var loaded from the artifact
-        run: docker pull ${{ env.IMAGE_TAG }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Run the application container
-        # CORRECTED: Use the env var loaded from the artifact
-        run: |
-          docker run \
-            --detach \
-            --name test-backend \
-            --publish 3000:3000 \
-            --network host \
-            -e DB_ENGINE_TYPE=POSTGRES \
-            -e DB_PROTOCOL=postgres \
-            -e DB_USER=postgres \
-            -e DB_PASSWORD=postgres \
-            -e DB_HOST=localhost \
-            -e DB_PORT=5432 \
-            -e DB_NAME=news_app \
-            -e STORAGE_TYPE=DISK \
-            ${{ env.IMAGE_TAG }}
-
-      - name: Wait for services to start
-        run: |
-          echo "Waiting for the database and server to initialize..."
-          sleep 15
-
-      - name: Check server health
-        run: |
-          echo "Pinging server health endpoint..."
-          curl --fail http://localhost:3000/db/available
-
-      - name: Cleanup containers
-        if: always()
-        run: |
-          echo "Stopping and removing test containers..."
-          docker stop test-backend test-postgres
-          docker rm test-backend test-postgres
-  
-  update-manifests:
-    name: Update K8s Manifests
-    runs-on: ubuntu-latest
-    needs: test
-
-    steps:
-      # ADDED: Download the context artifact
-      - name: Download context artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: job-context
-
-      # ADDED: Load context from artifact into environment variables
-      - name: Load context into environment
+      - name: Assemble tags for push
+        id: tags
         shell: bash
-        run: cat context.env >> $GITHUB_ENV
-        
+        run: |
+          set -euo pipefail
+          {
+            echo "tags<<EOF"
+            echo "${{ env.IMAGE_TAG_FULL }}"
+            if [[ "${{ env.IS_LATEST }}" == "true" ]]; then
+              echo "${{ env.IMAGE_REPO }}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and Push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VITE_SERVER_URL=/api
+            VITE_NEWS_INTERVAL_IN_MIN=5
+            VITE_FRONTEND_GIT_BRANCH=${{ env.BRANCH }}
+            VITE_FRONTEND_GIT_COMMIT=${{ env.COMMIT }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SRC_REPO }}
+            org.opencontainers.image.revision=${{ env.COMMIT }}
+
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -309,39 +357,38 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           path: manifests
 
-      - name: Install yq
+      - name: Install yq and Helm
         run: |
-          set -e
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-      - name: Install Helm
-        run: |
-          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-          chmod 700 get_helm.sh
-          ./get_helm.sh
-
-      - name: Update manifests and lint Helm chart
+      - name: Update manifests
         working-directory: manifests
-        # CORRECTED: Use env vars loaded from the artifact
         env:
           IMAGE_REPO: ${{ env.IMAGE_REPO }}
           IMAGE_TAG:  ${{ env.IMAGE_TAG_ONLY }}
           SUFFIX:     ${{ env.VALUES_SUFFIX }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
+          K8S_NS:     ${{ env.K8S_NS }}
         shell: bash
         run: |
           set -euo pipefail
+          FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
-          test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-          
-          yq -i '.image.repository = strenv(IMAGE_REPO) | .image.tag = strenv(IMAGE_TAG)' "${BACKEND_FILE}"
-          
-          echo "Linting backend chart..."
-          helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
-          echo "Rendering backend template..."
-          helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
+          BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
+          BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
+          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
+
+          yq -i "
+            .image.repository = \"${IMAGE_REPO}\" |
+            .image.tag = \"${IMAGE_TAG}\" |
+            .env.plain.BACKEND_SERVICE_HOST = \"${BACKEND_HOST}\" |
+            .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"
+          " "${FRONTEND_FILE}"
+
+          helm lint charts/frontend --values "${FRONTEND_FILE}"
 
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
@@ -349,7 +396,7 @@ jobs:
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
           
-          git add "${BACKEND_FILE}"
-          git commit -m "ci(manifests): update backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
+          git add "${FRONTEND_FILE}"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
 
