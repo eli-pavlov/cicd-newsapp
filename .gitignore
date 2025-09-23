@@ -1,6 +1,9 @@
 # .gitignore
 *.txt
 
+# Visual Studio Code specific
+.vscode/
+
 # Local .terraform directories
 .terraform/
 
