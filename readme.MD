@@ -202,25 +202,23 @@ Distributed under the MIT License. See LICENSE for details.
 
 <a id="handshake-contact"></a>
 
-:handshake: Contact
-Eli Pavlov — www.weblightenment.com — admin@weblightenment.com
+$~$
+
+## :handshake: Contact
+
+Eli Pavlov - www.weblightenment.com - admin@weblightenment.com
 
 Project Link: https://github.com/eli-pavlov/cicd-newsapp.git
 
-<a id="gem-acknowledgements"></a>
+$~$
 
-:gem: Acknowledgements
-Thanks to the open-source projects and tools used here:
-
-GitHub Actions
-
-Docker / Buildx
-
-Kubernetes / Helm
-
-Node.js / Vite
-
-Nginx
-
-yq by Mike Farah
+## :gem: Acknowledgements and thanks to:
+- [Canonical Ubuntu](https://ubuntu.com/community/governance/canonical)
+- [Kubernetes.io](https://kubernetes.io/docs)
+- [Oracle VirtualBox](https://www.virtualbox.org)
+- [HashiCorp Vagrant](https://www.vagrantup.com)
+- [hfmartinez/kubernetes-vagrant](https://github.com/hfmartinez/kubernetes-vagrant)
+- [Innablr/K8s_ubuntu](https://github.com/Innablr/k8s_ubuntu)
+- [exxsyseng/k8s_ubuntu](https://bitbucket.org/exxsyseng/k8s_ubuntu/src/master/)
+- [Awesome Github Readme File Generator](https://www.genreadme.cloud/)
 
