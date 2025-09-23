@@ -128,9 +128,9 @@ curl -X POST "https://api.github.com/repos/<owner>/<repo>/dispatches" \
       "app_name": "newsapp-backend"
     }
   }'
-Replace YOUR_GH_TOKEN and repo names with appropriate values.
-
 ```
+
+Replace YOUR_GH_TOKEN and repo names with appropriate values.
 
 <a id="open_file_folder-files"></a>
 
