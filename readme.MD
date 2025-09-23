@@ -85,12 +85,14 @@ git clone https://github.com/eli-pavlov/cicd-newsapp.git
 cd cicd-newsapp
 Review the workflows
 
-bash
+'''bash
 Copy code
 ls .github/workflows
 # open the workflow files
 vim .github/workflows/back_end.yml
 vim .github/workflows/front_end.yml
+'''
+
 Set GitHub Secrets
 Go to: Settings → Secrets and variables → Actions and add:
 
@@ -117,7 +119,7 @@ Open the Actions tab, pick a workflow, and click Run workflow. Provide any requi
 repository_dispatch (remote automation / CI integration)
 Example: trigger the backend pipeline remotely:
 
-bash
+'''bash
 Copy code
 curl -X POST "https://api.github.com/repos/<owner>/<repo>/dispatches" \
   -H "Accept: application/vnd.github.v3+json" \
@@ -131,6 +133,8 @@ curl -X POST "https://api.github.com/repos/<owner>/<repo>/dispatches" \
     }
   }'
 Replace YOUR_GH_TOKEN and repo names with appropriate values.
+
+'''
 
 <a id="open_file_folder-files"></a>
 
@@ -158,6 +162,8 @@ docs/needed_envs — list of required build-time and runtime env variables (DB, 
 .gitignore — files to exclude from git.
 
 README.md — this file.
+
+
 
 <details> <summary>File snippets / quick notes</summary>
 frontend/nginx/default.conf.template:
