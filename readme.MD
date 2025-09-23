@@ -154,9 +154,9 @@ Distributed under the MIT License. See LICENSE for details.
 ## :handshake: Contact
 
 Eli Pavlov - www.weblightenment.com - admin@weblightenment.com
+
 Project Link: https://github.com/eli-pavlov/cicd-newsapp.git 
-
-
+$~$
 
 ## :gem: Acknowledgements and thanks to:
 
