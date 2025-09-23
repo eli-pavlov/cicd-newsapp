@@ -1,4 +1,3 @@
-newsApp — CI/CD & Docker build repo
 <div align="center"> <img src="https://raw.githubusercontent.com/eli-pavlov/vagrant-kubernetes-EZ/master/docs/logo.webp" width="280" alt="logo" /> <h1>newsApp — CI/CD / Build workflows</h1> <p>Repository that holds CI workflows, Dockerfiles and helper docs for the newsApp frontend & backend builds and automated manifest updates (push → test → push image → update manifests).</p> <h4> · <a href="#star2-about-the-project">About</a> · <a href="#rocket-tldr">TL;DR</a> · <a href="#toolbox-prerequisites">Prerequisites</a> · <a href="#gear-usage">Usage</a> · <a href="#open_file_folder-files">Files</a> · <a href="#license">License</a> </h4> </div>
 :star2: About the project
 
