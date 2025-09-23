@@ -1,4 +1,4 @@
-name: Build, Push, & Test Frontend Image
+name: Build, Test, & Push Frontend Image
 
 on:
   repository_dispatch:
