@@ -215,12 +215,5 @@ Project Link: https://github.com/eli-pavlov/cicd-newsapp.git
 $~$
 
 ## :gem: Acknowledgements and thanks to:
-- [Canonical Ubuntu](https://ubuntu.com/community/governance/canonical)
-- [Kubernetes.io](https://kubernetes.io/docs)
-- [Oracle VirtualBox](https://www.virtualbox.org)
-- [HashiCorp Vagrant](https://www.vagrantup.com)
-- [hfmartinez/kubernetes-vagrant](https://github.com/hfmartinez/kubernetes-vagrant)
-- [Innablr/K8s_ubuntu](https://github.com/Innablr/k8s_ubuntu)
-- [exxsyseng/k8s_ubuntu](https://bitbucket.org/exxsyseng/k8s_ubuntu/src/master/)
-- [Awesome Github Readme File Generator](https://www.genreadme.cloud/)
 
+- [Awesome Github Readme File Generator](https://www.genreadme.cloud/)
