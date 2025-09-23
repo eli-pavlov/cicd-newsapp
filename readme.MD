@@ -21,10 +21,16 @@
 
 :notebook_with_decorative_cover: **Table of Contents**
 
-- [:star2: About the Project](#star2-about-the-project)
-- [:rocket: TL;DR](#rocket-tldr)
-- [:toolbox: Getting Started — Prerequisites](#toolbox-getting-started--prerequisites)
-- [:gear: Installation](#gear-installation)
+- [About the Project](#star2-about-the-project)  
+- [TL;DR](#rocket-tldr)  
+- [Prerequisites](#toolbox-getting-started)  
+- [Installation](#gear-installation)  
+- [Usage / Triggering Workflows](#wrench-usage--triggering-workflows)  
+- [Project Files](#open_file_folder-files)  
+- [How to verify outputs](#eyeglasses-how-to-verify-outputs)  
+- [License](#warning-license)  
+- [Contact](#handshake-contact)  
+- [Acknowledgements](#gem-acknowledgements)
 
 ---
 
@@ -77,3 +83,143 @@ Workflows included:
 ```bash
 git clone https://github.com/eli-pavlov/cicd-newsapp.git
 cd cicd-newsapp
+Review the workflows
+
+bash
+Copy code
+ls .github/workflows
+# open the workflow files
+vim .github/workflows/back_end.yml
+vim .github/workflows/front_end.yml
+Set GitHub Secrets
+Go to: Settings → Secrets and variables → Actions and add:
+
+DOCKERHUB_USERNAME — Docker Hub username
+
+DOCKERHUB_TOKEN — Docker Hub token/password (or use PAT if using GHCR)
+
+MANIFESTS_REPO — e.g. eli-pavlov/newsapp-manifests
+
+GH_TOKEN — Personal Access Token with repo write rights for MANIFESTS_REPO
+
+(Optional) Adjust workflow inputs
+If you use private source repos for frontend/backend, update the workflow inputs or the source_repo values used by the build job.
+
+<a id="wrench-usage--triggering-workflows"></a>
+
+:wrench: Usage / Triggering Workflows
+Push trigger
+Changes under frontend/** or backend/** on main or development will trigger the corresponding workflow.
+
+Manual trigger (workflow_dispatch)
+Open the Actions tab, pick a workflow, and click Run workflow. Provide any required inputs (branch, tag, target manifest path).
+
+repository_dispatch (remote automation / CI integration)
+Example: trigger the backend pipeline remotely:
+
+bash
+Copy code
+curl -X POST "https://api.github.com/repos/<owner>/<repo>/dispatches" \
+  -H "Accept: application/vnd.github.v3+json" \
+  -H "Authorization: token YOUR_GH_TOKEN" \
+  -d '{
+    "event_type": "backend",
+    "client_payload": {
+      "source_repo": "ghGill/newsAppBackend",
+      "source_ref": "main",
+      "app_name": "newsapp-backend"
+    }
+  }'
+Replace YOUR_GH_TOKEN and repo names with appropriate values.
+
+<a id="open_file_folder-files"></a>
+
+:open_file_folder: Files
+This repo contains the following important files and folders:
+
+.github/workflows/back_end.yml — CI/CD workflow for backend: build, test, push image, update manifests.
+
+.github/workflows/front_end.yml — CI/CD workflow for frontend: build, test, push image, update manifests.
+
+backend/Dockerfile — Multi-stage Dockerfile for Node.js backend.
+
+backend/.dockerignore — Docker ignore for backend.
+
+frontend/Dockerfile — Multi-stage build for Vite frontend served by Nginx.
+
+frontend/.dockerignore — Docker ignore for frontend.
+
+frontend/nginx/default.conf.template — Nginx configuration template that proxies /api/ to backend (uses envsubst).
+
+frontend/nginx/entrypoint.sh — Entrypoint script that substitutes runtime vars and generates env.js for client-side usage. Do not insert secrets into env.js.
+
+docs/needed_envs — list of required build-time and runtime env variables (DB, storage, Vite metadata, etc.).
+
+.gitignore — files to exclude from git.
+
+README.md — this file.
+
+<details> <summary>File snippets / quick notes</summary>
+frontend/nginx/default.conf.template:
+
+uses ${BACKEND_SERVICE_HOST} and ${BACKEND_SERVICE_PORT} for runtime substitution.
+
+entrypoint performs envsubst to create final default.conf.
+
+Entrypoint considerations:
+
+env.js must never contain secrets; use runtime-only server-side injections or secure endpoints.
+
+Ensure entrypoint.sh copies frontend/Dockerfile assets into build context when used by combined repository workflows.
+
+</details>
+<a id="eyeglasses-how-to-verify-outputs"></a>
+
+:eyeglasses: How to verify outputs
+Actions logs: open the Actions tab → select a run → view job logs (build, test, push steps).
+
+Docker images: check your Docker Hub namespace (or GHCR) for newly pushed tags (e.g., dev-<sha> / latest-<sha>).
+
+Manifests repo: inspect MANIFESTS_REPO (commits/PRs) for updated values/* files and verify the image tags were updated as expected.
+
+Local test runs: you can simulate the build locally with docker buildx (if multi-arch is enabled) or run unit tests with npm ci && npm test in each project.
+
+Quick commands
+List recent images on Docker Hub (local Docker CLI won't list remote images — use the web UI or registry API).
+
+To check a committed values file locally after workflow updates:
+
+bash
+Copy code
+git clone https://github.com/<owner>/<manifests-repo>.git
+cd <manifests-repo>
+git log -n 5 -- values/frontend/dev.yaml
+sed -n '1,120p' values/frontend/dev.yaml
+<a id="warning-license"></a>
+
+:warning: License
+Distributed under the MIT License. See LICENSE for details.
+
+<a id="handshake-contact"></a>
+
+:handshake: Contact
+Eli Pavlov — www.weblightenment.com — admin@weblightenment.com
+
+Project Link: https://github.com/eli-pavlov/cicd-newsapp.git
+
+<a id="gem-acknowledgements"></a>
+
+:gem: Acknowledgements
+Thanks to the open-source projects and tools used here:
+
+GitHub Actions
+
+Docker / Buildx
+
+Kubernetes / Helm
+
+Node.js / Vite
+
+Nginx
+
+yq by Mike Farah
