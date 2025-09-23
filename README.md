@@ -70,6 +70,8 @@ To use these pipelines, you need to configure the following secrets in your GitH
 
 The pipelines expect your manifests repository to have a structure similar to this, containing Helm values files that will be updated automatically:
 
+```bash
+
 newsapp-manifests/
 └── values/
 ├── backend/
@@ -78,7 +80,7 @@ newsapp-manifests/
 └── frontend/
 ├── dev.yaml
 └── prod.yam
-
+```
 
 ---
 
@@ -116,8 +118,9 @@ You can trigger the workflows in three ways:
 
 ---
 
-## 📂 Repository Structure
+## 📂 Repository Structure\
 
+```bash
 cicd-newsapp/
 ├── .github/workflows/
 │   ├── back_end.yml      # CI/CD pipeline for the backend service.
@@ -132,9 +135,9 @@ cicd-newsapp/
 │       ├── default.conf.template # NGINX config template for proxying API requests.
 │       └── entrypoint.sh         # Script to substitute env vars at container start.
 └── information/
-└── needed_envs       # A reference list of application environment variables.
-
-
+└── needed_envs  
+     # A reference list of application environment variables.
+```
 
 ---
 
