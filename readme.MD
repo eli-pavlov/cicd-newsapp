@@ -1,151 +1,184 @@
-<img src="https://example.com/newsapp-logo.png" width="320"> 
-NewsApp CI/CD Pipeline
-Automated CI/CD workflows for building, testing, and deploying NewsApp backend and frontend using GitHub Actions, Docker, and Kubernetes manifests.
-  ·   Documentation   ·   Report Bug   ·   Request Feature  
+<div align="center"> <img src="https://example.com/newsapp-logo.png" width="320" alt="NewsApp logo" /> <h1>NewsApp CI/CD Pipeline</h1> <p> Automated CI/CD workflows for building, testing, and deploying NewsApp backend and frontend using GitHub Actions, Docker, and Kubernetes manifests. </p> <h4> · <a href="#star2-about-the-project">About</a> · <a href="#rocket-tldr">TL;DR</a> · <a href="#toolbox-getting-started">Prerequisites</a> · <a href="#gear-installation">Installation</a> · <a href="#open_file_folder-files">Project Files</a> · <a href="#warning-license">License</a> </h4> </div>
 
 :notebook_with_decorative_cover: Table of Contents
 
 About the Project
+
 TL;DR
+
 Prerequisites
+
 Installation
+
 Project Files
+
 License
+
 Contact
+
 Acknowledgements
 
 :star2: About the Project
-This project provides GitHub Actions workflows to automate the CI/CD pipeline for the NewsApp, a news application split into backend and frontend repositories. It handles building multi-architecture Docker images, running integration tests, pushing images to Docker Hub, and updating Kubernetes manifests in a separate repository.
 
-Key features include:
+This repo provides GitHub Actions workflows to automate the CI/CD pipeline for NewsApp — a split frontend/backend application. The workflows:
 
-Triggers on push, repository dispatch, or manual workflow dispatch.
-Multi-arch builds for amd64 and arm64.
-Tests: Backend with Postgres, Frontend with mock backend.
-Environment mapping: main/master to prod/latest, others to dev.
-Updates Helm values in manifests repo for dev/prod.
+Build multi-architecture Docker images (amd64, arm64).
 
-Source repositories:
+Run lightweight integration tests (backend with Postgres, frontend with a mock backend).
+
+Push images to Docker Hub.
+
+Update Helm values in a separate manifests repository (dev/prod values files).
+
+Support triggers: push (paths), repository_dispatch, and manual workflow_dispatch.
+
+Source repositories (examples)
+
 Frontend: https://github.com/ghGill/newsAppFront
+
 Backend: https://github.com/ghGill/newsAppBackend
 
-This is for development and testing; enhance for production with security scans and approvals.
+This repository is aimed at development and testing. For production use, add security scans (Snyk, Trivy), image signing, approval gates, and stricter token scopes.
 
 :rocket: TL;DR
 
-Set up GitHub secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO, GH_TOKEN.
-Clone repo and push changes to trigger workflows.
+Add required GitHub secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO, GH_TOKEN.
 
+Push changes to frontend/** or backend/** on main / development to trigger workflows.
 
-Clone this repository:
+Or trigger manually / via repository_dispatch.
 
-bashgit clone https://github.com/ghGill/newsAppCI-CD.git
-
-Enter the project directory:
-
-bashcd newsAppCI-CD
-
-Configure secrets in GitHub settings.
-Push to trigger:
-
-bashgit push
 :toolbox: Getting Started
 Prerequisites
 
-GitHub repository with Actions enabled.
-Docker Hub account.
-Separate manifests repository for Kubernetes (e.g., with Helm charts).
-Git installed locally.
-Access to source repos: newsAppFront and newsAppBackend.
+GitHub repository with Actions enabled (this repo).
+
+Docker Hub account (or adapt workflows to another registry).
+
+A separate manifests repository (Helm charts + values/frontend/{dev,prod}.yaml, values/backend/{dev,prod}.yaml).
+
+git installed locally.
+
+Access to frontend/backend source repos (newsAppFront, newsAppBackend) if using the workflow inputs.
 
 :gear: Installation
+Clone repository
+git clone https://github.com/ghGill/newsAppCI-CD.git
+cd newsAppCI-CD
 
-Clone this repository:
+Review workflows
 
-bashgit clone https://github.com/ghGill/newsAppCI-CD.git
+Open and inspect the workflows:
 
-Enter the project directory:
+vim .github/workflows/back_end.yml
+vim .github/workflows/front_end.yml
 
-bashcd newsAppCI-CD
+Set GitHub secrets
 
-Review workflows:
+Navigate to: Settings → Secrets and variables → Actions and add:
 
-bashvim .github/workflows/back_end.yml  # (or edit using your editor of choice)
+DOCKERHUB_USERNAME — Docker Hub username
 
-Set up GitHub secrets:
+DOCKERHUB_TOKEN — Docker Hub token/password
 
-Navigate to repo Settings > Secrets and variables > Actions.
-Add secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO (e.g., "ghGill/newsAppManifests"), GH_TOKEN (Personal Access Token with repo scope).
+MANIFESTS_REPO — e.g. "ghGill/newsAppManifests" (owner/repo of manifests)
 
+GH_TOKEN — Personal Access Token with repo push rights for the manifests repo
 
-Trigger a workflow:
+Triggering a workflow
 
-Push changes to backend/** or frontend/** on main/development.
-Or use GitHub API for repository_dispatch:
+Push to backend/** or frontend/** on main / development.
 
+Or trigger with the API (repository_dispatch):
 
+# Example: trigger backend repository_dispatch
+curl -X POST "https://api.github.com/repos/ghGill/newsAppCI-CD/dispatches" \
+  -H "Accept: application/vnd.github.v3+json" \
+  -H "Authorization: token YOUR_GH_TOKEN" \
+  -d '{"event_type":"backend","client_payload":{"source_repo":"ghGill/newsAppBackend","source_ref":"main","app_name":"newsapp-backend"}}'
 
-bashcurl -X POST https://api.github.com/repos/ghGill/newsAppCI-CD/dispatches \
--H "Accept: application/vnd.github.v3+json" \
--H "Authorization: token YOUR_GH_TOKEN" \
--d '{"event_type": "backend"}'
+Verify
 
-Verify:
+Check the Actions tab in GitHub for workflow runs.
 
-Check Actions tab for runs.
-Images in Docker Hub under your username (e.g., newsapp-backend, newsapp-frontend).
-Manifests updated in the target repo.
+Verify pushed images on Docker Hub under your username (e.g., newsapp-backend, newsapp-frontend).
 
+Check the manifests repo for updated values/*.yaml.
 
-Cleanup (if needed):
+Cleanup
 
-Delete images or revert manifests manually.
+Remove images from Docker Hub manually if needed.
 
-
+Revert commits in the manifests repo if the automatic update committed unwanted changes.
 
 :open_file_folder: Files
 
+.github/workflows/back_end.yml
+CI/CD workflow for backend: build, test, push image, update manifests.
 
-.github/workflows/back_end.yml: CI/CD workflow for backend: build, test, push image, update manifests.
+.github/workflows/front_end.yml
+CI/CD workflow for frontend: build, test, push image, update manifests.
 
+backend/Dockerfile
+Multi-stage Dockerfile for Node.js backend.
 
-.github/workflows/front_end.yml: CI/CD workflow for frontend: build, test, push image, update manifests.
+backend/.dockerignore
+Docker ignore for backend.
 
+frontend/Dockerfile
+Multi-stage build for Vite frontend served by Nginx.
 
-backend/Dockerfile: Multi-stage Dockerfile for Node.js backend.
+frontend/.dockerignore
+Docker ignore for frontend.
 
+frontend/nginx/default.conf.template
+Nginx configuration template that proxies /api/ to the backend (uses envsubst).
 
-frontend/Dockerfile: Multi-stage Dockerfile for Vite frontend served by Nginx.
- frontend/nginx/default.conf.template: 
-- Nginx configuration template with API proxy to backend.
- 
- frontend/nginx/entrypoint.sh: 
-- Entry script to substitute env vars into Nginx config and generate env.js for client-side.
- 
+frontend/nginx/entrypoint.sh
+Entrypoint that substitutes runtime vars and generates env.js for client-side code. Do not include secrets in env.js.
 
+docs/needed_envs
+Required build-time and runtime environment variables (DB, storage, Vite/Backend metadata).
 
-docs/needed_envs: List of required build-time and runtime environment variables.
+.gitignore
+Files to exclude from git.
 
-
-.dockerignore, .gitignore: Exclusion files for Docker builds and Git.
-
-
-README.md: This documentation file.
-
+README.md
+This documentation file.
 
 :warning: License
-Distributed under the MIT License. See LICENSE for more information.
+
+Distributed under the MIT License. See LICENSE for details.
+
 :handshake: Contact
-ghGill - [Your Website] - [your-email@example.com]
+
+ghGill — [Your Website] — [your-email@example.com
+]
 
 Project Link: https://github.com/ghGill/newsAppCI-CD.git
+
 :gem: Acknowledgements
 
+Thanks to the open-source projects and tools used here:
+
 GitHub Actions
+
 Docker
-Kubernetes
-Node.js
-Vite
+
+Kubernetes / Helm
+
+Node.js / Vite
+
 Nginx
-Helm
-Awesome README Generator
+
+Mike Farah’s yq
+
+Awesome README Generators
+
+If you’d like, I can:
+
+convert this into a fully rendered README.md file and push a PR,
+
+add example values/*.{dev,prod}.yaml snippets to match the workflows, or
+
+add ISSUE_TEMPLATE / PULL_REQUEST_TEMPLATE files.
