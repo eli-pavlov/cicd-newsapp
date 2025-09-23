@@ -111,7 +111,7 @@ Remove images from Docker Hub manually if needed.
 
 Revert commits in the manifests repo if the automatic update committed unwanted changes.
 
-:open_file_folder: Files
+## :open_file_folder: Files
 
 .github/workflows/back_end.yml
 CI/CD workflow for backend: build, test, push image, update manifests.
