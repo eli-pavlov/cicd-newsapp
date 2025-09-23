@@ -48,8 +48,12 @@ jobs:
       (github.event_name == 'repository_dispatch' && github.event.action == 'backend')
     runs-on: ubuntu-latest
     
+    # CORRECTED: Properly define all outputs for downstream jobs
     outputs:
       image_tag: ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
+      image_repo: ${{ steps.ctx.outputs.image }}
+      image_tag_only: ${{ steps.compute-tags.outputs.tag }}
+      values_suffix: ${{ steps.deploy.outputs.values_suffix }}
 
     steps:
       - name: Checkout (CI/CD repo)
@@ -202,10 +206,11 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
+  # --- Test job remains the same, but will now receive the correct output ---
   test:
     name: Test Docker Image
     runs-on: ubuntu-latest
-    needs: docker # This ensures the test job runs only after the 'docker' job succeeds
+    needs: docker
 
     steps:
       - name: Login to Docker Hub
@@ -250,13 +255,11 @@ jobs:
 
       - name: Check server health
         run: |
-          # Use curl with --fail to exit with an error code if HTTP status is not 2xx
-          # We are checking the /db/available endpoint from your app.js
           echo "Pinging server health endpoint..."
           curl --fail http://localhost:3000/db/available
 
       - name: Cleanup containers
-        if: always() # This step runs even if the health check fails
+        if: always()
         run: |
           echo "Stopping and removing test containers..."
           docker stop test-backend test-postgres
@@ -265,7 +268,7 @@ jobs:
   update-manifests:
     name: Update K8s Manifests
     runs-on: ubuntu-latest
-    needs: test # It now depends on the 'test' job
+    needs: test
 
     steps:
       - name: Checkout manifests repo
@@ -289,7 +292,7 @@ jobs:
 
       - name: Update manifests and lint Helm chart
         working-directory: manifests
-        # This needs to get the outputs from the 'docker' job, not 'test'
+        # CORRECTED: These env vars now correctly reference the outputs from the 'docker' job
         env:
           IMAGE_REPO: ${{ needs.docker.outputs.image_repo }}
           IMAGE_TAG:  ${{ needs.docker.outputs.image_tag_only }}
@@ -318,3 +321,4 @@ jobs:
           git add "${BACKEND_FILE}"
           git commit -m "ci(manifests): update backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
+
