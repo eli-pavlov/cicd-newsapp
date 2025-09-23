@@ -21,16 +21,12 @@
 
 :notebook_with_decorative_cover: **Table of Contents**
 
-- [About the Project](#star2-about-the-project)  
-- [TL;DR](#rocket-tldr)  
-- [Prerequisites](#toolbox-getting-started)  
-- [Installation](#gear-installation)  
-- [Usage / Triggering Workflows](#wrench-usage--triggering-workflows)  
-- [Project Files](#open_file_folder-files)  
-- [How to verify outputs](#eyeglasses-how-to-verify-outputs)  
-- [License](#warning-license)  
-- [Contact](#handshake-contact)  
-- [Acknowledgements](#gem-acknowledgements)
+- [:star2: About the Project](#star2-about-the-project)
+- [:rocket: TL;DR](#rocket-tldr)
+- [:toolbox: Getting Started — Prerequisites](#toolbox-getting-started--prerequisites)
+- [:gear: Installation](#gear-installation)
+- [:handshake: Contact](#handshake-contact)
+- [:gem: Acknowledgements and thanks to:](#gem-acknowledgements-and-thanks-to)
 
 ---
 
@@ -91,7 +87,7 @@ ls .github/workflows
 # open the workflow files
 vim .github/workflows/back_end.yml
 vim .github/workflows/front_end.yml
-'''
+```
 
 Set GitHub Secrets
 Go to: Settings → Secrets and variables → Actions and add:
@@ -119,7 +115,7 @@ Open the Actions tab, pick a workflow, and click Run workflow. Provide any requi
 repository_dispatch (remote automation / CI integration)
 Example: trigger the backend pipeline remotely:
 
-'''bash
+```bash
 Copy code
 curl -X POST "https://api.github.com/repos/<owner>/<repo>/dispatches" \
   -H "Accept: application/vnd.github.v3+json" \
@@ -134,7 +130,7 @@ curl -X POST "https://api.github.com/repos/<owner>/<repo>/dispatches" \
   }'
 Replace YOUR_GH_TOKEN and repo names with appropriate values.
 
-'''
+```
 
 <a id="open_file_folder-files"></a>
 
