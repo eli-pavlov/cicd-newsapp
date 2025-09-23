@@ -1,19 +1,53 @@
+# ---------------------------------------------------------------------
+# NGINX site config for single-page frontend with API proxying.
+# ---------------------------------------------------------------------
+
 server {
+  # Port inside the container (matches Dockerfile EXPOSE 8080).
+  # Note: Docker `EXPOSE` is informational; ensure container runtime maps this port to the host as needed.
   listen 8080;
+  # Catch-all server_name. In production you may want to set a specific hostname.
   server_name _;
 
+  # Document root: matches the Dockerfile where assets are copied to /usr/share/nginx/html
   root /usr/share/nginx/html;
   index index.html;
 
   # Single page app fallback
+  # - try_files will serve the requested static asset if present, otherwise fall back to index.html
+  # - This enables client-side routing (e.g., React Router / Vue Router in history mode).
   location / {
     try_files $uri $uri/ /index.html;
   }
 
   # Proxy API -> backend svc in the same namespace (templated)
+  # - $BACKEND_SERVICE_HOST and $BACKEND_SERVICE_PORT are expected to be substituted
+  #   into this file at container start (e.g., using envsubst in the entrypoint).
+  # - Important: the trailing slash in proxy_pass (`/.../`) controls how the request
+  #   path is rewritten. With the trailing slash here, the matching prefix (/api/) is
+  #   replaced by the proxied path root. Verify this behavior matches your backend routing.
   location /api/ {
     proxy_pass http://$BACKEND_SERVICE_HOST:$BACKEND_SERVICE_PORT/;
+    # Preserve original Host header (useful if backend uses host-based logic)
     proxy_set_header Host $host;
+    # Forward client IP — consider adding X-Forwarded-For as well for proxy chains
     proxy_set_header X-Real-IP $remote_addr;
+    #
+    # Best-practice recommendations (not enabled here to avoid changing behavior):
+    # - forward X-Forwarded-For / X-Forwarded-Proto:
+    #     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #     proxy_set_header X-Forwarded-Proto $scheme;
+    # - tune timeouts to avoid long-hanging requests:
+    #     proxy_connect_timeout 5s;
+    #     proxy_send_timeout 30s;
+    #     proxy_read_timeout 30s;
+    # - disable proxy buffering for streaming APIs if necessary:
+    #     proxy_buffering off;
+    # - set proxy_http_version 1.1 and Connection header for websockets:
+    #     proxy_http_version 1.1;
+    #     proxy_set_header Connection "";
+    #
+    # Also consider adding caching, rate-limiting, TLS termination, and security headers
+    # at the ingress/edge layer depending on your threat model and performance needs.
   }
 }
