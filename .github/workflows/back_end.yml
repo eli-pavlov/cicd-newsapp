@@ -1,4 +1,4 @@
-name: Build, Push, & Test Backend Image
+name: Build, Test, & Push Backend Image
 
 on:
   repository_dispatch:
