@@ -1,4 +1,4 @@
-name: Build & Push Backend Image
+name: Build, Push, & Test Backend Image
 
 on:
   repository_dispatch:
@@ -47,6 +47,9 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'backend')
     runs-on: ubuntu-latest
+    
+    outputs:
+      image_tag: ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
 
     steps:
       - name: Checkout (CI/CD repo)
@@ -199,69 +202,72 @@ jobs:
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
-      # WIP - testing the built image locally
-      # Not ready yet - needs fixes
-      # - name: Pull built backend image (for test)
-      #   run: |
-      #     set -euo pipefail
-      #     IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
-      #     echo "Pulling ${IMAGE}"
-      #     docker pull "${IMAGE}"
+  test:
+    name: Test Docker Image
+    runs-on: ubuntu-latest
+    needs: docker # This ensures the test job runs only after the 'docker' job succeeds
 
-      # - name: Run backend container and test HTTP response
-      #   shell: bash
-      #   env:
-      #     IMAGE: ${{ steps.ctx.outputs.image }}
-      #     TAG:   ${{ steps.compute-tags.outputs.tag }}
-      #   run: |
-      #     set -euo pipefail
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      #     IMAGE_FULL="${IMAGE}:${TAG}"
-      #     CONTAINER_NAME="ci-test-backend"
-      #     HOST_PORT=8081
-      #     CONTAINER_PORT=8080
-      #     URLPATH="/"
-      #     MAX_RETRIES=30
-      #     SLEEP_SECS=2
+      - name: Start Postgres Database
+        run: |
+          docker run --name test-postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_DB=news_app \
+            -p 5432:5432 \
+            -d postgres:13
 
-      #     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-      #     docker run -d --name "${CONTAINER_NAME}" -p "${HOST_PORT}:${CONTAINER_PORT}" "${IMAGE_FULL}"
+      - name: Pull the built image from registry
+        run: docker pull ${{ needs.docker.outputs.image_tag }}
 
-      #     i=0
-      #     while [ $i -lt $MAX_RETRIES ]; do
-      #       if [ "$(docker inspect -f '{{.State.Running}}' ${CONTAINER_NAME} 2>/dev/null || echo false)" != "true" ]; then
-      #         echo "::error::Container ${CONTAINER_NAME} is not running (inspect follows)"
-      #         docker ps -a --filter "name=${CONTAINER_NAME}"
-      #         docker inspect "${CONTAINER_NAME}" || true
-      #         echo "------ last logs (tail 200) ------"
-      #         docker logs --tail 200 "${CONTAINER_NAME}" || true
-      #         EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER_NAME}" || echo "unknown")
-      #         echo "::error::Container exit code: ${EXIT_CODE}"
-      #         docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-      #         exit 1
-      #       fi
+      - name: Run the application container
+        run: |
+          docker run \
+            --detach \
+            --name test-backend \
+            --publish 3000:3000 \
+            --network host \
+            -e DB_ENGINE_TYPE=POSTGRES \
+            -e DB_PROTOCOL=postgres \
+            -e DB_USER=postgres \
+            -e DB_PASSWORD=postgres \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_NAME=news_app \
+            -e STORAGE_TYPE=DISK \
+            ${{ needs.docker.outputs.image_tag }}
 
-      #       http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HOST_PORT}${URLPATH}" || true)
-      #       if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
-      #         echo "Success: backend responded with HTTP ${http_code}"
-      #         echo "------ container logs (tail 200) ------"
-      #         docker logs --tail 200 "${CONTAINER_NAME}" || true
-      #         docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-      #         exit 0
-      #       fi
+      - name: Wait for services to start
+        run: |
+          echo "Waiting for the database and server to initialize..."
+          sleep 15
 
-      #       echo "Waiting for backend (attempt $((i+1))/${MAX_RETRIES})..."
-      #       sleep $SLEEP_SECS
-      #       i=$((i+1))
-      #     done
+      - name: Check server health
+        run: |
+          # Use curl with --fail to exit with an error code if HTTP status is not 2xx
+          # We are checking the /db/available endpoint from your app.js
+          echo "Pinging server health endpoint..."
+          curl --fail http://localhost:3000/db/available
 
-      #     echo "::error::Backend did not respond in time; dumping diagnostics..."
-      #     docker ps -a --filter "name=${CONTAINER_NAME}"
-      #     docker inspect "${CONTAINER_NAME}" || true
-      #     docker logs --tail 500 "${CONTAINER_NAME}" || true
-      #     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-      #     exit 1
+      - name: Cleanup containers
+        if: always() # This step runs even if the health check fails
+        run: |
+          echo "Stopping and removing test containers..."
+          docker stop test-backend test-postgres
+          docker rm test-backend test-postgres
+  
+  update-manifests:
+    name: Update K8s Manifests
+    runs-on: ubuntu-latest
+    needs: test # It now depends on the 'test' job
 
+    steps:
       - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
@@ -283,35 +289,32 @@ jobs:
 
       - name: Update manifests and lint Helm chart
         working-directory: manifests
+        # This needs to get the outputs from the 'docker' job, not 'test'
         env:
-          IMAGE_REPO: ${{ steps.ctx.outputs.image }}
-          IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
-          SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
+          IMAGE_REPO: ${{ needs.docker.outputs.image_repo }}
+          IMAGE_TAG:  ${{ needs.docker.outputs.image_tag_only }}
+          SUFFIX:     ${{ needs.docker.outputs.values_suffix }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
         shell: bash
         run: |
           set -euo pipefail
-
-          # 1. CORRECTED: Target the backend values file
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
           test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-
-          # 2. CORRECTED: Update the correct keys in the backend values file
+          
           yq -i '.image.repository = strenv(IMAGE_REPO) | .image.tag = strenv(IMAGE_TAG)' "${BACKEND_FILE}"
-
+          
           echo "Linting backend chart..."
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
 
           echo "Rendering backend template..."
           helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
 
-          # 3. CORRECTED: Git operations for the backend file
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
-
+          
           git add "${BACKEND_FILE}"
           git commit -m "ci(manifests): update backend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
