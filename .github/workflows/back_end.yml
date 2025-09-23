@@ -86,7 +86,6 @@ jobs:
             echo "::error::Missing one or more required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO, GH_TOKEN"
             exit 1
           fi
-
       - name: Resolve context
         id: ctx
         # Resolve inputs and repository_dispatch payload into canonical variables used later
@@ -112,7 +111,6 @@ jobs:
             echo "app=${APP}"
             echo "image=${IMAGE}"
           } >> "$GITHUB_OUTPUT"
-
       - name: Checkout backend source repo
         # Check out the backend source into a subdirectory `src` so we can build from it.
         uses: actions/checkout@v4
@@ -122,32 +120,24 @@ jobs:
           path: src
 
       - name: Prepare build context
-        # Ensure a Dockerfile and .dockerignore are present in 'src/' for the build.
+        # Ensure a Dockerfile and .dockerignore are present in `src/` (copy from backend/ if necessary)
         shell: bash
         run: |
           set -euo pipefail
-          
-          # First, check if the source repo ('src') already has a Dockerfile.
-          # If not, fall back to the one in this CI/CD repo.
           if [ -f src/Dockerfile ]; then
-            echo "Dockerfile found in the source repository."
+            echo "Dockerfile present in src/"
           elif [ -f backend/Dockerfile ]; then
-            echo "Copying Dockerfile from CI/CD repository."
+            # Copy Dockerfile from repo's backend/ directory into src/ for the build
             cp backend/Dockerfile src/Dockerfile
           else
-            echo "::error::No Dockerfile found in the source repo or the CI/CD repo."
+            echo "::error::No Dockerfile found (expected src/Dockerfile or backend/Dockerfile)"
             exit 1
           fi
-
-          # Do the same for the .dockerignore file
           if [ -f src/.dockerignore ]; then
-            echo ".dockerignore found in the source repository."
+            echo ".dockerignore found in src/"
           elif [ -f backend/.dockerignore ]; then
-            echo "Copying .dockerignore from CI/CD repository."
             cp backend/.dockerignore src/.dockerignore
           fi
-
-
       - name: Compute image tags
         id: compute-tags
         # Determine commit, short SHA, and tag naming convention (latest-<sha> or dev-<sha>)
@@ -172,7 +162,6 @@ jobs:
             echo "is_latest=${IS_LATEST}"
             echo "branch=${BASE}"
           } >> "$GITHUB_OUTPUT"
-
       - name: Resolve deploy environment
         id: deploy
         # Map is_latest => environment (prod/dev), Kubernetes namespace and corresponding values file suffix.
@@ -190,7 +179,6 @@ jobs:
             echo "k8s_ns=development" >> "$GITHUB_OUTPUT"
             echo "values_suffix=dev" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Set up QEMU
         # QEMU is required for emulating other architectures when building multi-arch images.
         uses: docker/setup-qemu-action@v3
@@ -224,7 +212,6 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-
       - name: Build & Push (multi-arch)
         # Multi-arch build and push. Uses GitHub Actions cache for build layers.
         uses: docker/build-push-action@v6
@@ -242,7 +229,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
-
       # ADDED: Save context for downstream jobs as an artifact
       - name: Save context for downstream jobs
         # Persist lightweight metadata about the built image to an artifact for use by downstream jobs.
@@ -294,7 +280,6 @@ jobs:
             -e POSTGRES_DB=news_app \
             -p 5432:5432 \
             -d postgres:13
-
       - name: Pull the built image from registry
         # CORRECTED: Use the env var loaded from the artifact
         run: docker pull ${{ env.IMAGE_TAG }}
@@ -320,19 +305,16 @@ jobs:
             -e DB_NAME=news_app \
             -e STORAGE_TYPE=DISK \
             ${{ env.IMAGE_TAG }}
-
       - name: Wait for services to start
         run: |
           echo "Waiting for the database and server to initialize..."
           # This is a simple sleep; for more robust runs use a retry loop + health checks to reduce flakiness.
           sleep 15
-
       - name: Check server health
         # curl will exit non-zero if the endpoint returns non-2xx; this is used as the test assertion.
         run: |
           echo "Pinging server health endpoint..."
           curl --fail http://localhost:3000/db/available
-
       - name: Cleanup containers
         # Ensure containers are removed even if tests fail.
         if: always()
@@ -372,14 +354,12 @@ jobs:
           set -e
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
-
       - name: Install Helm
         # Uses upstream install script; for reproducibility you may pin script commit or install a specific binary release.
         run: |
           curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
           chmod 700 get_helm.sh
           ./get_helm.sh
-
       - name: Update manifests and lint Helm chart
         working-directory: manifests
         # CORRECTED: Use env vars loaded from the artifact
@@ -400,11 +380,9 @@ jobs:
           echo "Linting backend chart..."
           # Helm lint helps catch common chart problems before pushing manifests.
           helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
-
           echo "Rendering backend template..."
           # Render templates to ensure chart templates render successfully with the provided values.
           helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
-
           # Set up authenticated git remote. Using a personal or machine token here requires the token to have repo:contents and push rights.
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"

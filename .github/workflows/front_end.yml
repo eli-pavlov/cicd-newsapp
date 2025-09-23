@@ -85,7 +85,6 @@ jobs:
             echo "::error::Missing one or more required secrets"
             exit 1
           fi
-
       - name: Resolve context
         id: ctx
         # Normalize inputs (workflow_dispatch inputs) and payload (repository_dispatch) into canonical variables.
@@ -109,7 +108,6 @@ jobs:
             echo "app=${APP}"
             echo "image=${IMAGE}"
           } >> "$GITHUB_OUTPUT"
-
       - name: Checkout frontend source repo
         # Checkout the source to `src/` so the build context is isolated from the workflow repo.
         uses: actions/checkout@v4
@@ -119,32 +117,23 @@ jobs:
           path: src
 
       - name: Prepare build context
+        # Copy nginx files and Dockerfile into src/ so the build context contains what is needed.
         shell: bash
         run: |
           set -euo pipefail
-          
           mkdir -p src/nginx
           if [ -d "frontend/nginx" ]; then
             cp -r frontend/nginx/* src/nginx/
           fi
-
-          if [ -f src/Dockerfile ]; then
-            echo "Dockerfile found in the source repository."
-          elif [ -f frontend/Dockerfile ]; then
-            echo "Copying Dockerfile from CI/CD repository."
+          if [ -f frontend/Dockerfile ]; then
             cp frontend/Dockerfile src/Dockerfile
           else
-            echo "::error::No Dockerfile found in the source repo or the CI/CD repo."
+            echo "::error::No Dockerfile found"
             exit 1
           fi
-
-          if [ -f src/.dockerignore ]; then
-            echo ".dockerignore found in the source repository."
-          elif [ -f frontend/.dockerignore ]; then
-            echo "Copying .dockerignore from CI/CD repository."
+          if [ -f frontend/.dockerignore ]; then
             cp frontend/.dockerignore src/.dockerignore
           fi
-
       - name: Compute image tags
         id: compute-tags
         # Determine commit SHA and tag naming convention; use `latest-<sha>` for main/master, else `dev-<sha>`.
@@ -168,7 +157,6 @@ jobs:
             echo "is_latest=${IS_LATEST}"
             echo "branch=${BASE}"
           } >> "$GITHUB_OUTPUT"
-
       - name: Resolve deploy environment
         id: deploy
         # Map `is_latest` to environment names and K8s namespace / values suffix conventions.
@@ -186,7 +174,6 @@ jobs:
             echo "k8s_ns=development" >> "$GITHUB_OUTPUT"
             echo "values_suffix=dev" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Set up QEMU
         # Required if/when building for multiple CPU architectures; harmless if not used.
         uses: docker/setup-qemu-action@v3
@@ -213,7 +200,6 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-
       - name: Build image for testing
         # Build a local image (load into local docker) for integration tests; not pushed yet.
         uses: docker/build-push-action@v6
@@ -232,7 +218,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
-
       - name: Save context for downstream jobs
         # Persist lightweight metadata to an artifact for downstream jobs (test & push).
         shell: bash
@@ -246,7 +231,6 @@ jobs:
           echo "COMMIT=${{ steps.compute-tags.outputs.commit }}" >> context.env
           echo "SRC_REPO=${{ steps.ctx.outputs.src_repo }}" >> context.env
           echo "K8S_NS=${{ steps.deploy.outputs.k8s_ns }}" >> context.env
-
       - name: Upload context artifact
         # Upload artifact so downstream jobs can retrieve the build metadata reliably.
         uses: actions/upload-artifact@v4
@@ -280,7 +264,6 @@ jobs:
           CONTAINER_NAME="ci-test-frontend"
           NET="ci-net-${GITHUB_RUN_ID}"
           MOCK_NAME="ci-backend-mock"
-
           # Create an isolated docker network to run the frontend with a simple mock backend.
           docker network create "${NET}" >/dev/null 2>&1 || true
           docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 3000" >/dev/null
@@ -291,11 +274,9 @@ jobs:
             -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
             -e BACKEND_SERVICE_PORT="3000" \
             "${IMAGE_FULL}"
-
           echo "Waiting for frontend container to start..."
           # Simple sleep; consider polling the health endpoint with retries to reduce flakes.
           sleep 15
-
           echo "Checking frontend container health..."
           http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/" || true)
           if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
@@ -305,7 +286,6 @@ jobs:
             docker logs "${CONTAINER_NAME}"
             exit 1
           fi
-
       - name: Cleanup containers
         # Always clean up resources even if previous steps fail.
         if: always()
@@ -314,7 +294,6 @@ jobs:
           docker stop ci-test-frontend ci-backend-mock || true
           docker rm ci-test-frontend ci-backend-mock || true
           docker network rm ci-net-${{ github.run_id }} || true
-
   push-and-update-manifests:
     name: Push Image & Update Manifests
     runs-on: ubuntu-latest
@@ -350,7 +329,6 @@ jobs:
           if [ -d "frontend/nginx" ]; then cp -r frontend/nginx/* src/nginx/; fi
           if [ -f frontend/Dockerfile ]; then cp frontend/Dockerfile src/Dockerfile; fi
           if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
-
       - name: Login to Docker Hub
         # Authenticate to the Docker registry to allow push.
         uses: docker/login-action@v3
@@ -378,7 +356,6 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-
       - name: Build and Push multi-arch image
         # Multi-arch push: build for amd64 and arm64 and push to registry.
         uses: docker/build-push-action@v6
@@ -396,7 +373,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ env.SRC_REPO }}
             org.opencontainers.image.revision=${{ env.COMMIT }}
-
       - name: Checkout manifests repo
         # Checkout the manifests repo so we can update values files and push changes.
         uses: actions/checkout@v4
@@ -411,7 +387,6 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
       - name: Update manifests
         working-directory: manifests
         env:
@@ -425,12 +400,10 @@ jobs:
           set -euo pipefail
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
-
           # Extract backend service name & port from backend values; fallback defaults are provided.
           BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
           BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
-
           # Update frontend values with image and runtime env variables pointing to backend service.
           yq -i "
             .image.repository = \"${IMAGE_REPO}\" |
@@ -438,10 +411,8 @@ jobs:
             .env.plain.BACKEND_SERVICE_HOST = \"${BACKEND_HOST}\" |
             .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"
           " "${FRONTEND_FILE}"
-
           # Lint the chart to catch errors before committing
           helm lint charts/frontend --values "${FRONTEND_FILE}"
-
           # Configure git to push changes back securely using token authentication
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
