@@ -119,21 +119,29 @@ jobs:
           path: src
 
       - name: Prepare build context
-        # Copy nginx files and Dockerfile into src/ so the build context contains what is needed.
         shell: bash
         run: |
           set -euo pipefail
+          
           mkdir -p src/nginx
           if [ -d "frontend/nginx" ]; then
             cp -r frontend/nginx/* src/nginx/
           fi
-          if [ -f frontend/Dockerfile ]; then
+
+          if [ -f src/Dockerfile ]; then
+            echo "Dockerfile found in the source repository."
+          elif [ -f frontend/Dockerfile ]; then
+            echo "Copying Dockerfile from CI/CD repository."
             cp frontend/Dockerfile src/Dockerfile
           else
-            echo "::error::No Dockerfile found"
+            echo "::error::No Dockerfile found in the source repo or the CI/CD repo."
             exit 1
           fi
-          if [ -f frontend/.dockerignore ]; then
+
+          if [ -f src/.dockerignore ]; then
+            echo ".dockerignore found in the source repository."
+          elif [ -f frontend/.dockerignore ]; then
+            echo "Copying .dockerignore from CI/CD repository."
             cp frontend/.dockerignore src/.dockerignore
           fi
 

@@ -122,24 +122,31 @@ jobs:
           path: src
 
       - name: Prepare build context
-        # Ensure a Dockerfile and .dockerignore are present in `src/` (copy from backend/ if necessary)
+        # Ensure a Dockerfile and .dockerignore are present in 'src/' for the build.
         shell: bash
         run: |
           set -euo pipefail
+          
+          # First, check if the source repo ('src') already has a Dockerfile.
+          # If not, fall back to the one in this CI/CD repo.
           if [ -f src/Dockerfile ]; then
-            echo "Dockerfile present in src/"
+            echo "Dockerfile found in the source repository."
           elif [ -f backend/Dockerfile ]; then
-            # Copy Dockerfile from repo's backend/ directory into src/ for the build
+            echo "Copying Dockerfile from CI/CD repository."
             cp backend/Dockerfile src/Dockerfile
           else
-            echo "::error::No Dockerfile found (expected src/Dockerfile or backend/Dockerfile)"
+            echo "::error::No Dockerfile found in the source repo or the CI/CD repo."
             exit 1
           fi
+
+          # Do the same for the .dockerignore file
           if [ -f src/.dockerignore ]; then
-            echo ".dockerignore found in src/"
+            echo ".dockerignore found in the source repository."
           elif [ -f backend/.dockerignore ]; then
+            echo "Copying .dockerignore from CI/CD repository."
             cp backend/.dockerignore src/.dockerignore
           fi
+
 
       - name: Compute image tags
         id: compute-tags
