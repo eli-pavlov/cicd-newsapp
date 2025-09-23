@@ -85,7 +85,7 @@ git clone https://github.com/eli-pavlov/cicd-newsapp.git
 cd cicd-newsapp
 Review the workflows
 
-'''bash
+bash
 Copy code
 ls .github/workflows
 # open the workflow files
