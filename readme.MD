@@ -159,7 +159,7 @@ docs/needed_envs — list of required build-time and runtime env variables (DB, 
 
 README.md — this file.
 
-
+$~$
 
 <details> <summary>File snippets / quick notes</summary>
 frontend/nginx/default.conf.template:
@@ -173,6 +173,8 @@ Entrypoint considerations:
 env.js must never contain secrets; use runtime-only server-side injections or secure endpoints.
 
 Ensure entrypoint.sh copies frontend/Dockerfile assets into build context when used by combined repository workflows.
+
+$~$
 
 </details>
 <a id="eyeglasses-how-to-verify-outputs"></a>
@@ -197,6 +199,9 @@ git clone https://github.com/<owner>/<manifests-repo>.git
 cd <manifests-repo>
 git log -n 5 -- values/frontend/dev.yaml
 sed -n '1,120p' values/frontend/dev.yaml
+
+$~$
+
 <a id="warning-license"></a>
 
 :warning: License
