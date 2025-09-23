@@ -150,12 +150,11 @@ This documentation file.
 
 Distributed under the MIT License. See LICENSE for details.
 
-:handshake: Contact
 
-ghGill — [Your Website] — [your-email@example.com
-]
+## :handshake: Contact
 
-Project Link: https://github.com/ghGill/newsAppCI-CD.git
+Eli Pavlov - www.weblightenment.com - admin@weblightenment.com
+
 
 :gem: Acknowledgements
 
@@ -173,12 +172,4 @@ Nginx
 
 Mike Farah’s yq
 
-Awesome README Generators
-
-If you’d like, I can:
-
-convert this into a fully rendered README.md file and push a PR,
-
-add example values/*.{dev,prod}.yaml snippets to match the workflows, or
-
-add ISSUE_TEMPLATE / PULL_REQUEST_TEMPLATE files.
+Awesome README Generator.
