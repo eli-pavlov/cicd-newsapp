@@ -1,4 +1,4 @@
-<div align="center"> <img src="https://example.com/newsapp-logo.png" width="320" alt="NewsApp logo" /> <h1>NewsApp CI/CD Pipeline</h1> <p> Automated CI/CD workflows for building, testing, and deploying NewsApp backend and frontend using GitHub Actions, Docker, and Kubernetes manifests. </p> <h4> · <a href="#star2-about-the-project">About</a> · <a href="#rocket-tldr">TL;DR</a> · <a href="#toolbox-getting-started">Prerequisites</a> · <a href="#gear-installation">Installation</a> · <a href="#open_file_folder-files">Project Files</a> · <a href="#warning-license">License</a> </h4> </div>
+<div align="center"> <h1>NewsApp CI/CD Pipeline</h1> <p> Automated CI/CD workflows for building, testing, and deploying NewsApp backend and frontend using GitHub Actions, Docker, and Kubernetes manifests. </p> <h4> · <a href="#star2-about-the-project">About</a> · <a href="#rocket-tldr">TL;DR</a> · <a href="#toolbox-getting-started">Prerequisites</a> · <a href="#gear-installation">Installation</a> · <a href="#open_file_folder-files">Project Files</a> · <a href="#warning-license">License</a> </h4> </div>
 
 :notebook_with_decorative_cover: Table of Contents
 
