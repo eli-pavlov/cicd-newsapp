@@ -25,19 +25,14 @@ on:
         required: true
         default: "newsapp-frontend"
         type: string
-      debug:
-        description: "Enable build + runtime debug (print index.html, collect artifacts)"
-        required: false
-        default: "false"
-        type: string
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: cicd-${{ github.workflow }}-manifests
-  cancel-in-progress: false
+  group: cicd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   MANIFEST_APP_DEFAULT: newsapp-frontend
@@ -46,12 +41,22 @@ env:
   YQ_VERSION: v4.44.3
 
 jobs:
-  docker:
+  build:
+    name: Build Frontend Image
     if: >
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'frontend')
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
+      image_repo: ${{ steps.ctx.outputs.image }}
+      image_tag_only: ${{ steps.compute-tags.outputs.tag }}
+      values_suffix: ${{ steps.deploy.outputs.values_suffix }}
+      branch: ${{ steps.compute-tags.outputs.branch }}
+      commit: ${{ steps.compute-tags.outputs.commit }}
+      src_repo: ${{ steps.ctx.outputs.src_repo }}
+      tags: ${{ steps.tags.outputs.tags }}
 
     steps:
       - name: Checkout (CI/CD repo)
@@ -65,7 +70,7 @@ jobs:
              [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ] || \
              [ -z "${{ secrets.MANIFESTS_REPO }}" ] || \
              [ -z "${{ secrets.GH_TOKEN }}" ]; then
-            echo "::error::Missing one or more required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, MANIFESTS_REPO, GH_TOKEN"
+            echo "::error::Missing one or more required secrets"
             exit 1
           fi
 
@@ -104,24 +109,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p src/nginx
-          if [ -d "src/nginx" ] && [ "$(ls -A src/nginx || true)" ]; then
-            echo "Using nginx files present in src/nginx."
-          elif [ -d "frontend/nginx" ]; then
+          if [ -d "frontend/nginx" ]; then
             cp -r frontend/nginx/* src/nginx/
-          else
-            echo "No nginx directory found (neither src/nginx nor frontend/nginx)."
           fi
-          if [ -f src/Dockerfile ]; then
-            echo "Dockerfile present in src/"
-          elif [ -f frontend/Dockerfile ]; then
+          if [ -f frontend/Dockerfile ]; then
             cp frontend/Dockerfile src/Dockerfile
           else
-            echo "::error::No Dockerfile found (expected src/Dockerfile or frontend/Dockerfile)"
+            echo "::error::No Dockerfile found"
             exit 1
           fi
-          if [ -f src/.dockerignore ]; then
-            echo ".dockerignore found in src/"
-          elif [ -f frontend/.dockerignore ]; then
+          if [ -f frontend/.dockerignore ]; then
             cp frontend/.dockerignore src/.dockerignore
           fi
 
@@ -195,241 +192,144 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Docker image
-        id: build
+      - name: Build image for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VITE_SERVER_URL=/api
+            VITE_NEWS_INTERVAL_IN_MIN=5
+            VITE_FRONTEND_GIT_BRANCH=${{ steps.compute-tags.outputs.branch }}
+            VITE_FRONTEND_GIT_COMMIT=${{ steps.compute-tags.outputs.commit }}
+          labels: |
+            org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
+            org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
+      - name: Save context for downstream jobs
+        shell: bash
+        run: |
+          echo "IMAGE_TAG=${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}" > context.env
+      
+      - name: Upload context artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-context-frontend
+          path: context.env
+
+  test:
+    name: Test Frontend Image
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download context artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: job-context-frontend
+
+      - name: Load context into environment
+        shell: bash
+        run: cat context.env >> $GITHUB_ENV
+      
+      - name: Run frontend container and test
+        shell: bash
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${{ env.IMAGE_TAG }}"
+          CONTAINER_NAME="ci-test-frontend"
+          NET="ci-net-${GITHUB_RUN_ID}"
+          MOCK_NAME="ci-backend-mock"
+
+          docker network create "${NET}" >/dev/null 2>&1 || true
+          docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 3000" >/dev/null
+          
+          docker run -d --name "${CONTAINER_NAME}" \
+            --network "${NET}" \
+            -p "8080:8080" \
+            -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
+            -e BACKEND_SERVICE_PORT="3000" \
+            "${IMAGE_FULL}"
+
+          echo "Waiting for frontend container to start..."
+          sleep 15
+
+          echo "Checking frontend container health..."
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/" || true)
+          if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
+            echo "Success: frontend responded with HTTP ${http_code}"
+          else
+            echo "::error::Frontend did not respond correctly. HTTP code: ${http_code}"
+            docker logs "${CONTAINER_NAME}"
+            exit 1
+          fi
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          echo "Stopping and removing test containers..."
+          docker stop ci-test-frontend ci-backend-mock || true
+          docker rm ci-test-frontend ci-backend-mock || true
+          docker network rm ci-net-${{ github.run_id }} || true
+
+  push-and-update-manifests:
+    name: Push Image & Update Manifests
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout (CI/CD repo)
+        uses: actions/checkout@v4
+        
+      - name: Checkout frontend source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.build.outputs.src_repo }}
+          ref: ${{ needs.build.outputs.commit }}
+          path: src
+
+      - name: Prepare build context
+        shell: bash
+        run: |
+          mkdir -p src/nginx
+          if [ -d "frontend/nginx" ]; then cp -r frontend/nginx/* src/nginx/; fi
+          if [ -f frontend/Dockerfile ]; then cp frontend/Dockerfile src/Dockerfile; fi
+          if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: ./src
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          no-cache: true                # keep for debugging; remove/false for normal runs
+          tags: ${{ needs.build.outputs.tags }}
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
-            DEBUG_BUILD=true
-            VITE_FRONTEND_GIT_BRANCH=${{ steps.compute-tags.outputs.branch }}
-            VITE_FRONTEND_GIT_COMMIT=${{ steps.compute-tags.outputs.commit }}
-          tags: ${{ steps.tags.outputs.tags }}
+            VITE_FRONTEND_GIT_BRANCH=${{ needs.build.outputs.branch }}
+            VITE_FRONTEND_GIT_COMMIT=${{ needs.build.outputs.commit }}
           labels: |
-            org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
-            org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
-
-      - name: Pull built frontend image (for test)
-        run: |
-          set -euo pipefail
-          IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
-          echo "Pulling ${IMAGE}"
-          docker pull "${IMAGE}"
-
-
-
-      - name: Inspect image filesystem (list + dump .html files)
-        if: always()
-        run: |
-          set -euo pipefail
-
-          IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
-          TMP_NAME="ci-inspect-${{ github.run_id }}"
-          mkdir -p image-artifacts || true
-
-          echo "Creating temporary container ${TMP_NAME} from ${IMAGE_FULL} (used for docker cp fallback)..."
-          docker create --name "${TMP_NAME}" "${IMAGE_FULL}" >/dev/null 2>&1 || true
-
-          echo "Searching image ${IMAGE_FULL} for .html/.htm files (maxdepth 8)..."
-          # Use image's shell to run find so search runs inside the image filesystem
-          docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "find / -xdev -maxdepth 8 -type f \( -iname '*.html' -o -iname '*.htm' \) -print 2>/dev/null" > image-artifacts/html-files.txt || true
-
-          # If nothing found, record diagnostic checks
-          if [ ! -s image-artifacts/html-files.txt ]; then
-            echo "No html files found by find — collecting directory listings for common webroots and build output dirs..." >> image-artifacts/html-files.txt
-            for p in /usr/share/nginx/html /var/www/html /app/dist /app/build /app/backend/public/app /app/public /opt/app; do
-              echo "---- ls ${p} ----" >> image-artifacts/html-files.txt
-              docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "ls -la ${p} || true" >> image-artifacts/html-files.txt || true
-            done
-          fi
-
-          # Read discovered paths and dump each file (limit lines to avoid massive artifacts)
-          idx=0
-          while IFS= read -r path; do
-            [ -z "${path}" ] && continue
-            # skip our inserted "---- ls" lines if present
-            if echo "${path}" | grep -q '^---- ls'; then
-              continue
-            fi
-            # sanitize name for filesystem
-            safe=$(echo "${path}" | sed 's/[^a-zA-Z0-9]/_/g' | sed 's/_\+/_/g' | sed 's/^_//; s/_$//')
-            out="image-artifacts/html-$(printf "%03d" ${idx})-${safe}.html"
-            echo "Dumping ${path} -> ${out} (first 1000 lines)..."
-            # primary attempt: run sed inside image to output file contents (keeps us from needing docker cp)
-            docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "sed -n '1,1000p' '${path}'" > "${out}" 2>/dev/null || true
-
-            # fallback: try docker cp from created container if the primary attempt produced nothing
-            if [ ! -s "${out}" ]; then
-              if docker cp "${TMP_NAME}:${path}" "${out}" 2>/dev/null; then
-                echo "Copied ${path} via docker cp -> ${out}"
-              else
-                echo "FAILED to extract ${path}" >> image-artifacts/html-files.txt
-              fi
-            fi
-
-            idx=$((idx+1))
-          done < image-artifacts/html-files.txt || true
-
-          # Also try canonical fallback paths (attempt docker cp and record if successful)
-          for p in /usr/share/nginx/html/index.html /usr/share/nginx/html/index.htm /var/www/html/index.html /app/dist/index.html /app/build/index.html /app/backend/public/app/index.html; do
-            out="image-artifacts/fallback-$(basename ${p})"
-            if docker cp "${TMP_NAME}:${p}" "${out}" 2>/dev/null; then
-              echo "Copied fallback ${p} -> ${out}" >> image-artifacts/html-files.txt
-            fi
-          done || true
-
-          # Save a listing of the usual nginx webroot
-          docker run --rm --entrypoint sh "${IMAGE_FULL}" -c "echo '--- /usr/share/nginx/html ---'; ls -la /usr/share/nginx/html || true" > image-artifacts/webroot-listing.txt || true
-
-          # cleanup
-          docker rm -f "${TMP_NAME}" >/dev/null 2>&1 || true
-
-          echo "Done. Found html paths (image-artifacts/html-files.txt) and dumped html files to image-artifacts/*.html"
-
-
-          
-      - name: Upload image-inspect artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-inspect
-          path: image-artifacts/*
-
-      - name: Run frontend container and test HTTP root (uses mock backend)
-        shell: bash
-        env:
-          IMAGE: ${{ steps.ctx.outputs.image }}
-          TAG:   ${{ steps.compute-tags.outputs.tag }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-
-          IMAGE_FULL="${IMAGE}:${TAG}"
-          CONTAINER_NAME="ci-test-frontend"
-          HOST_PORT=8082
-          CONTAINER_PORT=8080
-          URLPATH="/"
-          MAX_RETRIES=30
-          SLEEP_SECS=2
-
-          # Create ephemeral network to let frontend resolve mock backend by container name
-          NET="ci-net-${GITHUB_RUN_ID}"
-          docker network create "${NET}" >/dev/null 2>&1 || true
-
-          # Start a tiny mock backend (python http server) on the network
-          MOCK_NAME="ci-backend-mock"
-          docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
-          docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 3000" >/dev/null
-
-          # Ensure no old frontend container
-          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-
-          # Start frontend container on same network; set BACKEND env to mock service name so nginx can resolve it
-          docker run -d --name "${CONTAINER_NAME}" \
-            --network "${NET}" \
-            -p "${HOST_PORT}:${CONTAINER_PORT}" \
-            -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
-            -e BACKEND_SERVICE_PORT="3000" \
-            "${IMAGE_FULL}"
-
-          # Poll frontend as before; if either container exits we dump diagnostics
-          i=0
-          while [ $i -lt $MAX_RETRIES ]; do
-            # If frontend exited early, show logs and fail
-            if [ "$(docker inspect -f '{{.State.Running}}' ${CONTAINER_NAME} 2>/dev/null || echo false)" != "true" ]; then
-              echo "::error::Container ${CONTAINER_NAME} is not running (inspect follows)"
-              docker ps -a --filter "name=${CONTAINER_NAME}"
-              docker inspect "${CONTAINER_NAME}" || true
-              echo "------ frontend last logs (tail 200) ------"
-              docker logs --tail 200 "${CONTAINER_NAME}" || true
-              echo "------ mock backend last logs (tail 200) ------"
-              docker logs --tail 200 "${MOCK_NAME}" || true
-              EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER_NAME}" || echo "unknown")
-              echo "::error::Frontend exit code: ${EXIT_CODE}"
-              # cleanup on failure
-              docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-              docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
-              docker network rm "${NET}" >/dev/null 2>&1 || true
-              exit 1
-            fi
-
-            # Check that frontend responds on the mapped host port
-            http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HOST_PORT}${URLPATH}" || true)
-            if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
-              echo "Success: frontend responded with HTTP ${http_code}"
-              echo "------ frontend logs (tail 200) ------"
-              docker logs --tail 200 "${CONTAINER_NAME}" || true
-              # NOTE: DO NOT remove the container here — we want to copy index.html and HTTP body in following step
-              exit 0
-            fi
-
-            echo "Waiting for frontend (attempt $((i+1))/${MAX_RETRIES})..."
-            sleep $SLEEP_SECS
-            i=$((i+1))
-          done
-
-          echo "::error::Frontend did not respond in time; dumping diagnostics..."
-          docker ps -a --filter "name=${CONTAINER_NAME}"
-          docker inspect "${CONTAINER_NAME}" || true
-          docker logs --tail 500 "${CONTAINER_NAME}" || true
-          docker logs --tail 500 "${MOCK_NAME}" || true
-          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-          docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
-          docker network rm "${NET}" >/dev/null 2>&1 || true
-          exit 1
-
-      - name: Collect index.html + HTTP root body (upload artifacts)   # <<< ADDED
-        if: always()
-        run: |
-          set -euo pipefail
-          IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
-          CONTAINER_NAME="ci-test-frontend"
-          NET="ci-net-${GITHUB_RUN_ID}"
-          mkdir -p artifacts
-
-          # Try to copy index.html from container filesystem
-          if docker ps --filter "name=${CONTAINER_NAME}" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
-            if docker exec "${CONTAINER_NAME}" test -f /usr/share/nginx/html/index.html >/dev/null 2>&1; then
-              echo "Copying /usr/share/nginx/html/index.html from container..."
-              docker exec "${CONTAINER_NAME}" sh -c 'sed -n "1,500p" /usr/share/nginx/html/index.html' > artifacts/index.html || true
-            else
-              echo "index.html not found inside container; trying alternative paths..."
-              # Try other likely locations in the container
-              docker exec "${CONTAINER_NAME}" sh -c 'for p in /usr/share/nginx/html/index.html /usr/share/nginx/html/index.htm /var/www/html/index.html; do if [ -f "$p" ]; then echo "FOUND:$p"; sed -n "1,500p" "$p"; break; fi; done' > artifacts/index.html || true
-            fi
-          else
-            echo "Container ${CONTAINER_NAME} is not running; cannot copy index.html" > artifacts/index.html
-          fi
-
-          # Capture HTTP root body as well
-          echo "Saving HTTP root response (first 500 lines) to artifacts/http-root.html"
-          curl -s "http://localhost:8082/" | sed -n '1,500p' > artifacts/http-root.html || true
-
-      - name: Upload frontend debug artifacts                            # <<< ADDED
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-debug
-          path: artifacts/*
-
-      - name: Cleanup frontend + mock containers and network              # <<< ADDED
-        if: always()
-        run: |
-          set -euo pipefail
-          IMAGE_FULL="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
-          CONTAINER_NAME="ci-test-frontend"
-          MOCK_NAME="ci-backend-mock"
-          NET="ci-net-${GITHUB_RUN_ID}"
-          echo "Stopping/removing containers and network..."
-          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-          docker rm -f "${MOCK_NAME}" >/dev/null 2>&1 || true
-          docker network rm "${NET}" >/dev/null 2>&1 || true
+            org.opencontainers.image.source=${{ needs.build.outputs.src_repo }}
+            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
 
       - name: Checkout manifests repo
         uses: actions/checkout@v4
@@ -438,72 +338,30 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           path: manifests
 
-      - name: Install yq
+      - name: Install yq and Helm
         run: |
-          set -e
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-      - name: Install Helm
-        run: |
-          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-          chmod 700 get_helm.sh
-          ./get_helm.sh
-
-      - name: Validate Backend Service
+      - name: Update manifests
         working-directory: manifests
         env:
-          BACKEND_FILE: values/backend/${{ steps.deploy.outputs.values_suffix }}.yaml
-          K8S_NS: ${{ steps.deploy.outputs.k8s_ns }}
-        run: |
-          set -euo pipefail
-
-          test -f "${BACKEND_FILE}" || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-
-          # Extract correct top-level keys from backend values file (not ".backend.*")
-          BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
-
-          if [ -z "$BACKEND_NAME" ] || [ -z "$BACKEND_PORT" ]; then
-            echo "::error::Failed to extract backend service details from ${BACKEND_FILE}"
-            exit 1
-          fi
-
-          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
-          echo "Validated backend service: ${BACKEND_HOST}:${BACKEND_PORT}"
-
-          # Export for following actions that might read environment (optional - for debug)
-          echo "backend_host=${BACKEND_HOST}" >> "$GITHUB_OUTPUT"
-          echo "backend_port=${BACKEND_PORT}" >> "$GITHUB_OUTPUT"
-
-
-      - name: Update manifests and lint Helm chart
-        working-directory: manifests
-        env:
-          IMAGE_REPO: ${{ steps.ctx.outputs.image }}
-          IMAGE_TAG:  ${{ steps.compute-tags.outputs.tag }}
-          SUFFIX:     ${{ steps.deploy.outputs.values_suffix }}
-          K8S_NS:     ${{ steps.deploy.outputs.k8s_ns }}
+          IMAGE_REPO: ${{ needs.build.outputs.image_repo }}
+          IMAGE_TAG:  ${{ needs.build.outputs.image_tag_only }}
+          SUFFIX:     ${{ needs.build.outputs.values_suffix }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
+          K8S_NS:     ${{ needs.build.outputs.k8s_ns }}
         shell: bash
         run: |
           set -euo pipefail
-
-          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
-          test -f "${BACKEND_FILE}"  || { echo "::error::Missing ${BACKEND_FILE} in manifests repo"; exit 1; }
-          test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
+          BACKEND_FILE="values/backend/${SUFFIX}.yaml"
 
-          # Extract backend name/port from backend values (use top-level keys)
           BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
           BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
-
-          # Compose full DNS for the service in the target namespace
           BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
 
-          echo "Updating frontend (${FRONTEND_FILE}) to use image ${IMAGE_REPO}:${IMAGE_TAG} and backend ${BACKEND_HOST}:${BACKEND_PORT}"
-
-          # Update frontend values: image + backend env values
           yq -i "
             .image.repository = \"${IMAGE_REPO}\" |
             .image.tag = \"${IMAGE_TAG}\" |
@@ -511,30 +369,14 @@ jobs:
             .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"
           " "${FRONTEND_FILE}"
 
-          echo "Frontend values after update:"
-          yq '.' "${FRONTEND_FILE}"
+          helm lint charts/frontend --values "${FRONTEND_FILE}"
 
-          # Lint & render charts as before
-          echo "Linting backend chart..."
-          helm lint charts/backend --values "${BACKEND_FILE}" || { echo "::error::helm lint failed for backend"; exit 1; }
-
-          echo "Linting frontend chart..."
-          helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
-
-          echo "Rendering backend template..."
-          helm template backend charts/backend --values "${BACKEND_FILE}" >/dev/null
-
-          echo "Rendering frontend template..."
-          helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
-
-          # commit changes to manifests repo
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
-
+          
           git add "${FRONTEND_FILE}"
-          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}, proxy ${BACKEND_HOST}:${BACKEND_PORT}" || echo "No changes to commit"
+          git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
-
