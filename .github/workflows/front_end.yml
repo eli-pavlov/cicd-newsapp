@@ -49,14 +49,8 @@ jobs:
       (github.event_name == 'repository_dispatch' && github.event.action == 'frontend')
     runs-on: ubuntu-latest
     outputs:
+      # These outputs are now primarily for reference, as we use artifacts for data passing
       image_tag: ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
-      image_repo: ${{ steps.ctx.outputs.image }}
-      image_tag_only: ${{ steps.compute-tags.outputs.tag }}
-      values_suffix: ${{ steps.deploy.outputs.values_suffix }}
-      branch: ${{ steps.compute-tags.outputs.branch }}
-      commit: ${{ steps.compute-tags.outputs.commit }}
-      src_repo: ${{ steps.ctx.outputs.src_repo }}
-      tags: ${{ steps.tags.outputs.tags }}
 
     steps:
       - name: Checkout (CI/CD repo)
@@ -167,14 +161,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Assemble tags
+      
+      - name: Assemble tags for local build
         id: tags
         shell: bash
         env:
@@ -213,8 +201,16 @@ jobs:
       - name: Save context for downstream jobs
         shell: bash
         run: |
-          echo "IMAGE_TAG=${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}" > context.env
-      
+          echo "IMAGE_TAG_FULL=${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}" > context.env
+          echo "IMAGE_REPO=${{ steps.ctx.outputs.image }}" >> context.env
+          echo "IMAGE_TAG_ONLY=${{ steps.compute-tags.outputs.tag }}" >> context.env
+          echo "IS_LATEST=${{ steps.compute-tags.outputs.is_latest }}" >> context.env
+          echo "VALUES_SUFFIX=${{ steps.deploy.outputs.values_suffix }}" >> context.env
+          echo "BRANCH=${{ steps.compute-tags.outputs.branch }}" >> context.env
+          echo "COMMIT=${{ steps.compute-tags.outputs.commit }}" >> context.env
+          echo "SRC_REPO=${{ steps.ctx.outputs.src_repo }}" >> context.env
+          echo "K8S_NS=${{ steps.deploy.outputs.k8s_ns }}" >> context.env
+
       - name: Upload context artifact
         uses: actions/upload-artifact@v4
         with:
@@ -242,7 +238,7 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          IMAGE_FULL="${{ env.IMAGE_TAG }}"
+          IMAGE_FULL="${{ env.IMAGE_TAG_FULL }}"
           CONTAINER_NAME="ci-test-frontend"
           NET="ci-net-${GITHUB_RUN_ID}"
           MOCK_NAME="ci-backend-mock"
@@ -284,14 +280,23 @@ jobs:
     needs: test
 
     steps:
+      - name: Download context artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: job-context-frontend
+
+      - name: Load context into environment
+        shell: bash
+        run: cat context.env >> $GITHUB_ENV
+
       - name: Checkout (CI/CD repo)
         uses: actions/checkout@v4
         
       - name: Checkout frontend source repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ needs.build.outputs.src_repo }}
-          ref: ${{ needs.build.outputs.commit }}
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.COMMIT }}
           path: src
 
       - name: Prepare build context
@@ -314,6 +319,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Assemble tags for push
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "tags<<EOF"
+            echo "${{ env.IMAGE_TAG_FULL }}"
+            if [[ "${{ env.IS_LATEST }}" == "true" ]]; then
+              echo "${{ env.IMAGE_REPO }}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and Push multi-arch image
         uses: docker/build-push-action@v6
         with:
@@ -321,15 +340,15 @@ jobs:
           file: ./src/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ needs.build.outputs.tags }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             VITE_SERVER_URL=/api
             VITE_NEWS_INTERVAL_IN_MIN=5
-            VITE_FRONTEND_GIT_BRANCH=${{ needs.build.outputs.branch }}
-            VITE_FRONTEND_GIT_COMMIT=${{ needs.build.outputs.commit }}
+            VITE_FRONTEND_GIT_BRANCH=${{ env.BRANCH }}
+            VITE_FRONTEND_GIT_COMMIT=${{ env.COMMIT }}
           labels: |
-            org.opencontainers.image.source=${{ needs.build.outputs.src_repo }}
-            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
+            org.opencontainers.image.source=${{ env.SRC_REPO }}
+            org.opencontainers.image.revision=${{ env.COMMIT }}
 
       - name: Checkout manifests repo
         uses: actions/checkout@v4
@@ -347,11 +366,11 @@ jobs:
       - name: Update manifests
         working-directory: manifests
         env:
-          IMAGE_REPO: ${{ needs.build.outputs.image_repo }}
-          IMAGE_TAG:  ${{ needs.build.outputs.image_tag_only }}
-          SUFFIX:     ${{ needs.build.outputs.values_suffix }}
+          IMAGE_REPO: ${{ env.IMAGE_REPO }}
+          IMAGE_TAG:  ${{ env.IMAGE_TAG_ONLY }}
+          SUFFIX:     ${{ env.VALUES_SUFFIX }}
           BRANCH:     ${{ env.MANIFESTS_BRANCH }}
-          K8S_NS:     ${{ needs.build.outputs.k8s_ns }}
+          K8S_NS:     ${{ env.K8S_NS }}
         shell: bash
         run: |
           set -euo pipefail
@@ -380,3 +399,4 @@ jobs:
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
+
