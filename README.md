@@ -78,8 +78,8 @@ newsapp-manifests/
 │   ├── dev.yaml
 │   └── prod.yaml
 └── frontend/
-├── dev.yaml
-└── prod.yam
+    ├── dev.yaml
+    └── prod.yam
 ```
 
 ---
@@ -134,9 +134,8 @@ cicd-newsapp/
 │   └── nginx/
 │       ├── default.conf.template # NGINX config template for proxying API requests.
 │       └── entrypoint.sh         # Script to substitute env vars at container start.
-└── information/
-└── needed_envs  
-     # A reference list of application environment variables.
+└── .gitignore
+└──  README.md 
 ```
 
 ---
