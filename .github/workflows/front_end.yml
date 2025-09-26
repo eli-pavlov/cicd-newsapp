@@ -238,6 +238,21 @@ jobs:
           name: job-context-frontend
           path: context.env
 
+      - name: Save built image to tar
+        # save the locally-built image so other jobs can reuse it
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          echo "Saving ${IMAGE} to image.tar"
+          docker save -o image.tar "${IMAGE}"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image
+          path: image.tar
+
   test:
     name: Test Frontend Image
     runs-on: ubuntu-latest
@@ -253,6 +268,19 @@ jobs:
         # Load variables produced by the build job into $GITHUB_ENV for subsequent steps.
         shell: bash
         run: cat context.env >> $GITHUB_ENV
+      
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+
+      - name: Load image into docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f ./image.tar ] || { echo "image.tar not found"; exit 1; }
+          docker load -i ./image.tar
+
       
       - name: Run frontend container and test
         shell: bash
