@@ -259,16 +259,23 @@ jobs:
     needs: build
 
     steps:
-      # - name: Download context artifact
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: job-context-frontend
+      - name: Download context artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: job-context-frontend
 
-      # - name: Load context into environment
-      #   # Load variables produced by the build job into $GITHUB_ENV for subsequent steps.
-      #   shell: bash
-      #   run: cat context.env >> $GITHUB_ENV
-      
+      - name: Load context into environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          # context.env is produced by the build job and contains IMAGE_TAG_FULL
+          if [ -f context.env ]; then
+            echo "Loading build context into environment"
+            cat context.env >> $GITHUB_ENV
+          else
+            echo "context.env not found; IMAGE_TAG_FULL may be undefined"
+          fi
+
       - name: Download image artifact
         uses: actions/download-artifact@v4
         with:
@@ -280,48 +287,78 @@ jobs:
           set -euo pipefail
           [ -f ./image.tar ] || { echo "image.tar not found"; exit 1; }
           docker load -i ./image.tar
+          # remove tar to save disk
+          rm -f ./image.tar || true
 
-      
       - name: Run frontend container and test
         shell: bash
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          IMAGE_FULL="${{ env.IMAGE_TAG_FULL }}"
+
+          # Primary: use IMAGE_TAG_FULL injected from context.env
+          IMAGE_FULL="${IMAGE_TAG_FULL:-}"
+
+          # If IMAGE_FULL is empty, try to auto-detect a recently-loaded image
+          if [ -z "$IMAGE_FULL" ]; then
+            echo "WARNING: IMAGE_FULL not set from context.env. Attempting to auto-detect a loaded image..."
+            # find image with dev- or latest- tag pattern (last loaded)
+            IMAGE_FULL=$(docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' | \
+              egrep 'dev-|latest-' | sort -k2 -r | head -n1 | awk '{print $1}' || true)
+            if [ -z "$IMAGE_FULL" ]; then
+              echo "::error::Could not determine IMAGE_FULL. Aborting."
+              docker images --format 'REPO:TAG\t{{.Repository}}:{{.Tag}}' || true
+              exit 1
+            fi
+            echo "Auto-detected image: $IMAGE_FULL"
+          else
+            echo "Using IMAGE_FULL from context: $IMAGE_FULL"
+          fi
+
           CONTAINER_NAME="ci-test-frontend"
           NET="ci-net-${GITHUB_RUN_ID}"
           MOCK_NAME="ci-backend-mock"
-          # Create an isolated docker network to run the frontend with a simple mock backend.
+
           docker network create "${NET}" >/dev/null 2>&1 || true
           docker run -d --name "${MOCK_NAME}" --network "${NET}" python:3.11-alpine sh -c "python -m http.server 3000" >/dev/null
-          
+
           docker run -d --name "${CONTAINER_NAME}" \
             --network "${NET}" \
             -p "8080:8080" \
             -e BACKEND_SERVICE_HOST="${MOCK_NAME}" \
             -e BACKEND_SERVICE_PORT="3000" \
             "${IMAGE_FULL}"
-          echo "Waiting for frontend container to start..."
-          # Simple sleep; consider polling the health endpoint with retries to reduce flakes.
-          sleep 15
-          echo "Checking frontend container health..."
-          http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/" || true)
-          if [ -n "$http_code" ] && [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
-            echo "Success: frontend responded with HTTP ${http_code}"
-          else
+
+          echo "Waiting for frontend container to start (with retries)..."
+          http_code=""
+          for i in $(seq 1 12); do
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/" || true)
+            if [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
+              echo "Success: frontend responded with HTTP ${http_code}"
+              break
+            fi
+            echo "Not ready yet (attempt $i/12). HTTP=${http_code:-none}. Sleeping 5s..."
+            sleep 5
+          done
+
+          if ! [[ "$http_code" =~ ^(2|3|4)[0-9]{2}$ ]]; then
             echo "::error::Frontend did not respond correctly. HTTP code: ${http_code}"
-            docker logs "${CONTAINER_NAME}"
+            echo "=== docker ps ==="
+            docker ps -a || true
+            echo "=== docker logs ${CONTAINER_NAME} ==="
+            docker logs "${CONTAINER_NAME}" || true
             exit 1
           fi
+
       - name: Cleanup containers
-        # Always clean up resources even if previous steps fail.
         if: always()
         run: |
           echo "Stopping and removing test containers..."
           docker stop ci-test-frontend ci-backend-mock || true
           docker rm ci-test-frontend ci-backend-mock || true
           docker network rm ci-net-${{ github.run_id }} || true
+
   push-and-update-manifests:
     name: Push Image & Update Manifests
     runs-on: ubuntu-latest
