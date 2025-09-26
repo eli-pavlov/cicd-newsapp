@@ -1,25 +1,35 @@
 # name: Build, Test, & Push Frontend Image
 # ---------------------------------------------------------------------
 # Purpose:
-# - CI workflow to build, test, push a frontend Docker image and update K8s manifests
-# - Triggers: push to frontend paths, repository_dispatch (frontend), manual workflow_dispatch
-# Notes & best-practice suggestions:
-# - Secrets are validated early to fail fast.
-# - Build/test/push are separated into jobs with artifacts used to pass metadata between them.
-# - Consider pinning actions to specific SHAs for maximum supply-chain stability when needed.
-# - Keep the original logic and indentation unchanged; only explanatory comments were added.
+# - A Continuous Integration (CI) workflow to build, test, and push a frontend Docker image.
+# - After a successful test, it automatically updates the corresponding Kubernetes manifests.
+#
+# Triggers:
+# - On `push` to `main` or `development` branches affecting frontend paths.
+# - On `repository_dispatch` events with type `frontend`.
+# - On manual `workflow_dispatch` trigger.
+#
+# Notes & Best Practices:
+# - Fail-Fast: Secrets are validated at the beginning of the `build` job.
+# - Job Decoupling: Jobs are separated by concern (build, test, update) and use artifacts
+#   to pass data, ensuring they can be re-run independently if needed.
+# - Stability: Actions are pinned to major versions (e.g., `@v4`). For critical production
+#   systems, pinning to a specific SHA is recommended for maximum supply-chain security.
 # ---------------------------------------------------------------------
 
 name: Build, Test, & Push Frontend Image
 
 on:
+  # Triggered by a custom event, often from another repository or service.
   repository_dispatch:
     types: [frontend]
+  # Standard trigger for pushes to specified branches and paths.
   push:
     branches: [main, development]
     paths:
       - "frontend/**"
       - ".github/workflows/front_end.yml"
+  # Allows manual execution from the GitHub Actions UI with custom inputs.
   workflow_dispatch:
     inputs:
       source_repo:
@@ -38,43 +48,47 @@ on:
         default: "newsapp-frontend"
         type: string
 
-# Permissions: minimal scopes required for the workflow operations
+# Defines the minimum permissions required for the entire workflow.
+# Following the principle of least privilege enhances security.
 permissions:
-  contents: read
-  packages: write
+  contents: read   # Required to checkout the repository.
+  packages: write  # Required to push Docker images to GitHub Packages (if used).
 
 concurrency:
-  # Using workflow name + ref avoids accidental concurrent builds for the same ref.
-  # cancel-in-progress: true cancels previous runs in the same group, helpful for frequent pushes.
+  # Creates a concurrency group based on the workflow name and the Git ref.
+  # This prevents multiple runs for the same branch from executing simultaneously.
   group: cicd-${{ github.workflow }}-${{ github.ref }}
+  # If a new run starts for the same group, the previous in-progress run will be canceled.
   cancel-in-progress: true
 
 env:
-  # Defaults and pinned tool versions
+  # Global environment variables available to all jobs.
   MANIFEST_APP_DEFAULT: newsapp-frontend
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
   MANIFESTS_BRANCH: main
-  YQ_VERSION: v4.44.3
+  YQ_VERSION: v4.44.3 # Pin tool versions for reproducible builds.
 
 jobs:
   build:
     name: Build Frontend Image
-    # Run only for the intended event types
+    # Ensures this job only runs for the intended trigger events.
     if: >
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'frontend')
     runs-on: ubuntu-latest
     outputs:
-      # These outputs are primarily for reference; artifact passing is the more reliable approach.
+      # Job outputs can be used by other jobs but are less reliable for complex data than artifacts.
       image_tag: ${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}
 
     steps:
       - name: Checkout (CI/CD repo)
+        # Checks out the repository containing this workflow file.
         uses: actions/checkout@v4
 
       - name: Guard required secrets
-        # Fail early if any required secret is missing — prevents confusing mid-run failures.
+        # Fail-fast step: Verifies that all necessary secrets are present before starting.
+        # This prevents failures midway through the job due to missing credentials.
         shell: bash
         run: |
           set -euo pipefail
@@ -87,7 +101,8 @@ jobs:
           fi
       - name: Resolve context
         id: ctx
-        # Normalize inputs (workflow_dispatch inputs) and payload (repository_dispatch) into canonical variables.
+        # Normalizes inputs from different trigger types (push, workflow_dispatch, repository_dispatch)
+        # into a consistent set of variables for use throughout the job.
         shell: bash
         env:
           INP_REPO: ${{ inputs.source_repo }}
@@ -109,7 +124,8 @@ jobs:
             echo "image=${IMAGE}"
           } >> "$GITHUB_OUTPUT"
       - name: Checkout frontend source repo
-        # Checkout the source to `src/` so the build context is isolated from the workflow repo.
+        # Checks out the application source code into a dedicated `src/` directory.
+        # This isolates the build context from the workflow repository files.
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.ctx.outputs.src_repo }}
@@ -117,7 +133,8 @@ jobs:
           path: src
 
       - name: Prepare build context
-        # Copy nginx files and Dockerfile into src/ so the build context contains what is needed.
+        # Copies the Dockerfile, .dockerignore, and Nginx configuration into the `src/` directory,
+        # ensuring the Docker build context has everything it needs.
         shell: bash
         run: |
           set -euo pipefail
@@ -136,7 +153,8 @@ jobs:
           fi
       - name: Compute image tags
         id: compute-tags
-        # Determine commit SHA and tag naming convention; use `latest-<sha>` for main/master, else `dev-<sha>`.
+        # Generates a Docker tag based on the Git commit SHA and branch name.
+        # Uses `latest-<sha>` for the main branch and `dev-<sha>` for others.
         shell: bash
         run: |
           set -euo pipefail
@@ -159,7 +177,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Resolve deploy environment
         id: deploy
-        # Map `is_latest` to environment names and K8s namespace / values suffix conventions.
+        # Determines the target deployment environment (prod/dev) based on the branch.
+        # This mapping drives the Kubernetes namespace and Helm values file to be used later.
         shell: bash
         env:
           IS_LATEST: ${{ steps.compute-tags.outputs.is_latest }}
@@ -176,7 +195,8 @@ jobs:
           fi
       - name: Assemble tags for build & push
         id: tags
-        # Compose tag list for build-push-action.
+        # Composes the full list of tags to be applied to the Docker image.
+        # The `latest` tag is added for builds from the main branch.
         shell: bash
         env:
           IMAGE: ${{ steps.ctx.outputs.image }}
@@ -194,22 +214,23 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        # QEMU is required for emulating other architectures when building multi-arch images.
+        # Sets up QEMU static binaries, required for building multi-architecture Docker images.
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        # Buildx is required for multi-arch builds and caching.
+        # Sets up Docker Buildx, a CLI plugin that enables advanced features like multi-arch builds.
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        # Authenticate to Docker Hub before pushing images.
+        # Authenticates with Docker Hub to allow pushing the built image.
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build & Push (multi-arch)
-        # Multi-arch build and push. Uses GitHub Actions cache for build layers.
+        # Builds and pushes the Docker image for multiple architectures (amd64, arm64).
+        # Uses GHA cache to speed up subsequent builds. Injects build-time args and labels.
         uses: docker/build-push-action@v6
         with:
           cache-from: type=gha
@@ -229,7 +250,8 @@ jobs:
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
 
       - name: Save context for downstream jobs
-        # Persist lightweight metadata to an artifact for downstream jobs (test & push).
+        # Persists key metadata from this job into a file (`context.env`).
+        # This file will be uploaded as an artifact for other jobs to use.
         shell: bash
         run: |
           echo "IMAGE_TAG_FULL=${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}" > context.env
@@ -243,14 +265,16 @@ jobs:
           echo "K8S_NS=${{ steps.deploy.outputs.k8s_ns }}" >> context.env
 
       - name: Upload context artifact
-        # Upload artifact so downstream jobs can retrieve the build metadata reliably.
+        # Uploads the `context.env` file as an artifact named `job-context-frontend`.
+        # This is the recommended way to pass data between jobs reliably.
         uses: actions/upload-artifact@v4
         with:
           name: job-context-frontend
           path: context.env
 
       - name: Pull pushed image and export tar for test job
-        # After push, pull the pushed image tag and save as image.tar so the existing test job (unchanged) can load it.
+        # Pulls the just-pushed image from the registry to verify its availability.
+        # It then saves the image to a .tar file for the `test` job, decoupling testing from registry access.
         shell: bash
         run: |
           set -euo pipefail
@@ -261,6 +285,7 @@ jobs:
           docker save -o image.tar "${IMAGE}"
 
       - name: Upload image artifact
+        # Uploads the Docker image .tar file for the `test` job to consume.
         uses: actions/upload-artifact@v4
         with:
           name: frontend-image
@@ -269,19 +294,21 @@ jobs:
   test:
     name: Test Frontend Image
     runs-on: ubuntu-latest
+    # This job depends on the successful completion of the `build` job.
     needs: build
 
     steps:
       - name: Download context artifact
+        # Downloads the build metadata artifact from the `build` job.
         uses: actions/download-artifact@v4
         with:
           name: job-context-frontend
 
       - name: Load context into environment
+        # Loads the key-value pairs from `context.env` into the job's environment variables.
         shell: bash
         run: |
           set -euo pipefail
-          # context.env is produced by the build job and contains IMAGE_TAG_FULL
           if [ -f context.env ]; then
             echo "Loading build context into environment"
             cat context.env >> $GITHUB_ENV
@@ -290,11 +317,13 @@ jobs:
           fi
 
       - name: Download image artifact
+        # Downloads the Docker image .tar file created in the `build` job.
         uses: actions/download-artifact@v4
         with:
           name: frontend-image
 
       - name: Load image into docker
+        # Loads the Docker image from the .tar file into the local Docker daemon.
         shell: bash
         run: |
           set -euo pipefail
@@ -304,6 +333,11 @@ jobs:
           rm -f ./image.tar || true
 
       - name: Run frontend container and test
+        # Performs a smoke test:
+        # 1. Creates an isolated Docker network for the test.
+        # 2. Runs a mock backend container (a simple Python web server).
+        # 3. Runs the frontend container, configured to connect to the mock backend.
+        # 4. Polls the frontend's health endpoint until it responds with a success code.
         shell: bash
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -313,10 +347,9 @@ jobs:
           # Primary: use IMAGE_TAG_FULL injected from context.env
           IMAGE_FULL="${IMAGE_TAG_FULL:-}"
 
-          # If IMAGE_FULL is empty, try to auto-detect a recently-loaded image
+          # Fallback: if context is missing, attempt to find the most recently loaded image.
           if [ -z "$IMAGE_FULL" ]; then
             echo "WARNING: IMAGE_FULL not set from context.env. Attempting to auto-detect a loaded image..."
-            # find image with dev- or latest- tag pattern (last loaded)
             IMAGE_FULL=$(docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' | \
               egrep 'dev-|latest-' | sort -k2 -r | head -n1 | awk '{print $1}' || true)
             if [ -z "$IMAGE_FULL" ]; then
@@ -365,6 +398,8 @@ jobs:
           fi
 
       - name: Cleanup containers
+        # This step always runs, even if the previous steps fail, to ensure
+        # that test containers and networks are removed from the runner.
         if: always()
         run: |
           echo "Stopping and removing test containers..."
@@ -375,21 +410,24 @@ jobs:
   Update-manifests:
     name: Update Manifests
     runs-on: ubuntu-latest
+    # This job runs only after the `test` job has completed successfully.
     needs: test
 
     steps:
       - name: Download context artifact
+        # Downloads the build metadata artifact.
         uses: actions/download-artifact@v4
         with:
           name: job-context-frontend
 
       - name: Load context into environment
-        # Make the build metadata available as environment variables.
+        # Loads the build metadata into the job's environment variables.
         shell: bash
         run: cat context.env >> $GITHUB_ENV
 
       - name: Checkout manifests repo
-        # Check out the manifests repo so we can edit and push values files.
+        # Checks out the separate Kubernetes manifests repository.
+        # Uses a Personal Access Token (PAT) for write access.
         uses: actions/checkout@v4
         with:
           repository: ${{ secrets.MANIFESTS_REPO }}
@@ -397,13 +435,18 @@ jobs:
           path: manifests
 
       - name: Install yq and Helm
-        # Install tools needed to update YAML values and lint charts.
+        # Installs `yq` for command-line YAML processing and `helm` for chart validation.
         run: |
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
       - name: Update manifests and lint Helm chart
+        # This is the core deployment step:
+        # 1. Identifies the correct environment-specific Helm values file (`dev.yaml` or `prod.yaml`).
+        # 2. Uses `yq` to update the `image.tag` and other relevant values in the file.
+        # 3. Runs `helm lint` and `helm template` as sanity checks to prevent invalid configurations.
+        # 4. Commits and pushes the updated values file back to the manifests repository.
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ env.IMAGE_REPO }}
@@ -417,10 +460,10 @@ jobs:
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
 
-          # sanity check
+          # Sanity check that the target values file exists.
           test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
 
-          # Update frontend values with image and runtime env variables pointing to backend service.
+          # Update frontend values with the new image tag and backend service details.
           yq -i "
             .image.repository = strenv(IMAGE_REPO) |
             .image.tag = strenv(IMAGE_TAG) |
@@ -428,19 +471,20 @@ jobs:
             .env.plain.BACKEND_SERVICE_PORT = \"$(yq -r '.service.port // 3000' "${BACKEND_FILE}")\"
           " "${FRONTEND_FILE}"
 
-          # Lint the chart to catch errors before committing
+          # Lint the chart with the updated values to catch syntax errors.
           helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
 
-          # Render templates to verify render success
+          # Render templates to verify that the chart can be successfully rendered with the new values.
           helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
 
-          # Push changes back
+          # Configure Git to commit as the github-actions bot.
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
 
+          # Add, commit, and push the changes. The commit message includes the new image tag for traceability.
           git add "${FRONTEND_FILE}"
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
