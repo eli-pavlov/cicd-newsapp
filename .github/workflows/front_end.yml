@@ -259,15 +259,15 @@ jobs:
     needs: build
 
     steps:
-      - name: Download context artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: job-context-frontend
+      # - name: Download context artifact
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: job-context-frontend
 
-      - name: Load context into environment
-        # Load variables produced by the build job into $GITHUB_ENV for subsequent steps.
-        shell: bash
-        run: cat context.env >> $GITHUB_ENV
+      # - name: Load context into environment
+      #   # Load variables produced by the build job into $GITHUB_ENV for subsequent steps.
+      #   shell: bash
+      #   run: cat context.env >> $GITHUB_ENV
       
       - name: Download image artifact
         uses: actions/download-artifact@v4
