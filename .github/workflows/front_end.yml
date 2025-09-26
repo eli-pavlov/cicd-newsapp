@@ -70,7 +70,7 @@ env:
 
 jobs:
   build:
-    name: Build Frontend Image
+    name: Build & Push Frontend Image
     # Ensures this job only runs for the intended trigger events.
     if: >
       github.event_name == 'push' ||
