@@ -174,9 +174,9 @@ jobs:
             echo "k8s_ns=development" >> "$GITHUB_OUTPUT"
             echo "values_suffix=dev" >> "$GITHUB_OUTPUT"
           fi
-      - name: Assemble tags for local build
+      - name: Assemble tags for build & push
         id: tags
-        # Compose tag list for build action. For local testing we only build amd64 and load the image.
+        # Compose tag list for build-push-action.
         shell: bash
         env:
           IMAGE: ${{ steps.ctx.outputs.image }}
@@ -192,15 +192,32 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-      - name: Build image for testing
-        # Build a local image (load into local docker) for integration tests; not pushed yet.
+
+      - name: Set up QEMU
+        # QEMU is required for emulating other architectures when building multi-arch images.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        # Buildx is required for multi-arch builds and caching.
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        # Authenticate to Docker Hub before pushing images.
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push (multi-arch)
+        # Multi-arch build and push. Uses GitHub Actions cache for build layers.
         uses: docker/build-push-action@v6
         with:
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           context: ./src
           file: ./src/Dockerfile
-          platforms: linux/amd64
-          load: true
-          push: false
+          platforms: linux/amd64,linux/arm64
+          push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             VITE_SERVER_URL=/api
@@ -210,6 +227,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ steps.ctx.outputs.src_repo }}
             org.opencontainers.image.revision=${{ steps.compute-tags.outputs.commit }}
+
       - name: Save context for downstream jobs
         # Persist lightweight metadata to an artifact for downstream jobs (test & push).
         shell: bash
@@ -223,6 +241,7 @@ jobs:
           echo "COMMIT=${{ steps.compute-tags.outputs.commit }}" >> context.env
           echo "SRC_REPO=${{ steps.ctx.outputs.src_repo }}" >> context.env
           echo "K8S_NS=${{ steps.deploy.outputs.k8s_ns }}" >> context.env
+
       - name: Upload context artifact
         # Upload artifact so downstream jobs can retrieve the build metadata reliably.
         uses: actions/upload-artifact@v4
@@ -230,12 +249,14 @@ jobs:
           name: job-context-frontend
           path: context.env
 
-      - name: Save built image to tar
-        # save the locally-built image so other jobs can reuse it
+      - name: Pull pushed image and export tar for test job
+        # After push, pull the pushed image tag and save as image.tar so the existing test job (unchanged) can load it.
         shell: bash
         run: |
           set -euo pipefail
           IMAGE="${{ steps.ctx.outputs.image }}:${{ steps.compute-tags.outputs.tag }}"
+          echo "Pulling pushed image ${IMAGE} to ensure registry has it..."
+          docker pull "${IMAGE}"
           echo "Saving ${IMAGE} to image.tar"
           docker save -o image.tar "${IMAGE}"
 
@@ -369,7 +390,7 @@ jobs:
 
       - name: Checkout (CI/CD repo)
         uses: actions/checkout@v4
-        
+
       - name: Checkout frontend source repo
         # Check out the specific commit/branch used to build for reproducible rebuild/push.
         uses: actions/checkout@v4
@@ -379,57 +400,14 @@ jobs:
           path: src
 
       - name: Prepare build context
-        # Re-create any build context required for the final multi-arch push.
+        # Re-create any build context required for final manifest checks/helm linting.
         shell: bash
         run: |
           mkdir -p src/nginx
           if [ -d "frontend/nginx" ]; then cp -r frontend/nginx/* src/nginx/; fi
           if [ -f frontend/Dockerfile ]; then cp frontend/Dockerfile src/Dockerfile; fi
           if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
-      - name: Login to Docker Hub
-        # Authenticate to the Docker registry to allow push.
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Assemble tags for push
-        id: tags
-        # Prepare tag list for push (full tag and optional `latest`).
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo "tags<<EOF"
-            echo "${{ env.IMAGE_TAG_FULL }}"
-            if [[ "${{ env.IS_LATEST }}" == "true" ]]; then
-              echo "${{ env.IMAGE_REPO }}:latest"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-      - name: Build and Push multi-arch image
-        # Multi-arch push: build for amd64 and arm64 and push to registry.
-        uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./src/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          build-args: |
-            VITE_SERVER_URL=/api
-            VITE_NEWS_INTERVAL_IN_MIN=5
-            VITE_FRONTEND_GIT_BRANCH=${{ env.BRANCH }}
-            VITE_FRONTEND_GIT_COMMIT=${{ env.COMMIT }}
-          labels: |
-            org.opencontainers.image.source=${{ env.SRC_REPO }}
-            org.opencontainers.image.revision=${{ env.COMMIT }}
       - name: Checkout manifests repo
         # Checkout the manifests repo so we can update values files and push changes.
         uses: actions/checkout@v4
@@ -444,6 +422,7 @@ jobs:
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
       - name: Update manifests
         working-directory: manifests
         env:
@@ -476,7 +455,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin "${BRANCH}"
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
-          
+
           git add "${FRONTEND_FILE}"
           # Commit only if changes exist; avoid failing when nothing changed.
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
