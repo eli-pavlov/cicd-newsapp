@@ -174,14 +174,6 @@ jobs:
             echo "k8s_ns=development" >> "$GITHUB_OUTPUT"
             echo "values_suffix=dev" >> "$GITHUB_OUTPUT"
           fi
-      - name: Set up QEMU
-        # Required if/when building for multiple CPU architectures; harmless if not used.
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        # Buildx enables advanced Docker builds (multi-arch, cache, etc.)
-        uses: docker/setup-buildx-action@v3
-      
       - name: Assemble tags for local build
         id: tags
         # Compose tag list for build action. For local testing we only build amd64 and load the image.
