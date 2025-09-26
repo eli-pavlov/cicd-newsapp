@@ -372,8 +372,8 @@ jobs:
           docker rm ci-test-frontend ci-backend-mock || true
           docker network rm ci-net-${{ github.run_id }} || true
 
-  push-and-update-manifests:
-    name: Push Image & Update Manifests
+  Update-manifests:
+    name: Update Manifests
     runs-on: ubuntu-latest
     needs: test
 
@@ -388,28 +388,8 @@ jobs:
         shell: bash
         run: cat context.env >> $GITHUB_ENV
 
-      - name: Checkout (CI/CD repo)
-        uses: actions/checkout@v4
-
-      - name: Checkout frontend source repo
-        # Check out the specific commit/branch used to build for reproducible rebuild/push.
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.COMMIT }}
-          path: src
-
-      - name: Prepare build context
-        # Re-create any build context required for final manifest checks/helm linting.
-        shell: bash
-        run: |
-          mkdir -p src/nginx
-          if [ -d "frontend/nginx" ]; then cp -r frontend/nginx/* src/nginx/; fi
-          if [ -f frontend/Dockerfile ]; then cp frontend/Dockerfile src/Dockerfile; fi
-          if [ -f frontend/.dockerignore ]; then cp frontend/.dockerignore src/.dockerignore; fi
-
       - name: Checkout manifests repo
-        # Checkout the manifests repo so we can update values files and push changes.
+        # Check out the manifests repo so we can edit and push values files.
         uses: actions/checkout@v4
         with:
           repository: ${{ secrets.MANIFESTS_REPO }}
@@ -423,7 +403,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-      - name: Update manifests
+      - name: Update manifests and lint Helm chart
         working-directory: manifests
         env:
           IMAGE_REPO: ${{ env.IMAGE_REPO }}
@@ -436,20 +416,25 @@ jobs:
           set -euo pipefail
           FRONTEND_FILE="values/frontend/${SUFFIX}.yaml"
           BACKEND_FILE="values/backend/${SUFFIX}.yaml"
-          # Extract backend service name & port from backend values; fallback defaults are provided.
-          BACKEND_NAME=$(yq -r '.fullnameOverride // .app.name // "backend"' "${BACKEND_FILE}")
-          BACKEND_PORT=$(yq -r '.service.port // 3000' "${BACKEND_FILE}")
-          BACKEND_HOST="${BACKEND_NAME}.${K8S_NS}.svc.cluster.local"
+
+          # sanity check
+          test -f "${FRONTEND_FILE}" || { echo "::error::Missing ${FRONTEND_FILE} in manifests repo"; exit 1; }
+
           # Update frontend values with image and runtime env variables pointing to backend service.
           yq -i "
-            .image.repository = \"${IMAGE_REPO}\" |
-            .image.tag = \"${IMAGE_TAG}\" |
-            .env.plain.BACKEND_SERVICE_HOST = \"${BACKEND_HOST}\" |
-            .env.plain.BACKEND_SERVICE_PORT = \"${BACKEND_PORT}\"
+            .image.repository = strenv(IMAGE_REPO) |
+            .image.tag = strenv(IMAGE_TAG) |
+            .env.plain.BACKEND_SERVICE_HOST = \"$(yq -r '.fullnameOverride // .app.name // \"backend\"' "${BACKEND_FILE}")\" |
+            .env.plain.BACKEND_SERVICE_PORT = \"$(yq -r '.service.port // 3000' "${BACKEND_FILE}")\"
           " "${FRONTEND_FILE}"
+
           # Lint the chart to catch errors before committing
-          helm lint charts/frontend --values "${FRONTEND_FILE}"
-          # Configure git to push changes back securely using token authentication
+          helm lint charts/frontend --values "${FRONTEND_FILE}" || { echo "::error::helm lint failed for frontend"; exit 1; }
+
+          # Render templates to verify render success
+          helm template frontend charts/frontend --values "${FRONTEND_FILE}" >/dev/null
+
+          # Push changes back
           git remote set-url origin "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ secrets.MANIFESTS_REPO }}.git"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -457,6 +442,5 @@ jobs:
           git rebase origin/"${BRANCH}" || { git rebase --abort || true; git pull --no-rebase || true; }
 
           git add "${FRONTEND_FILE}"
-          # Commit only if changes exist; avoid failing when nothing changed.
           git commit -m "ci: frontend ${SUFFIX} -> ${IMAGE_REPO}:${IMAGE_TAG}" || echo "No changes to commit"
           git push origin "${BRANCH}"
