@@ -1,4 +1,4 @@
-# name: Build, Test, & Push Frontend Image
+# name: Build, Test, & Push Frontend Image.
 # ---------------------------------------------------------------------
 # Purpose:
 # - A Continuous Integration (CI) workflow to build, test, and push a frontend Docker image.
